@@ -1,0 +1,485 @@
+---
+title: "TC_sim_factorial_analysis_RS_2_and_3"
+author: "Keith Howen"
+date: "2025-07-22"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+source(here("lib", "preprocessing_v2.R"))
+
+source(here("lib", "probit_gibbs.R"))
+source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+```
+
+## Set path for data
+
+```{r}
+list.files(here("data"))
+```
+
+```{r}
+data_path = here("data", "envDataset_12h_10x10_with_mask.csv")
+```
+
+# 💻 Import & fix NA basin value
+
+```{r}
+# import the data
+data = read.csv(data_path)
+
+# fix basin NA category first (NA missing to "NA") and
+# convert it into a factor
+# (but not yet encoded yet)
+data.NA.fixed = fix_NA_value_and_refactor_basin(data)
+```
+
+
+# BASE DIRECTORY TO SAVE TO
+```{r}
+BASE_DIR = "simulation_factorial_analysis_n_2000_p_160_outputs"
+```
+
+
+
+# Read the 2 synthetic datasets (n=2000, p=160)
+
+
+```{r}
+results_n_2000_p_160 = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "results_n_2000_p_160.rds"))
+
+names(results_n_2000_p_160[['0']][['moderate']])
+names(results_n_2000_p_160[['0.9']][['moderate']])
+
+
+round(cor(results_n_2000_p_160[['0.9']][['moderate']]$X.syn[,1:5]), 5)
+
+```
+
+# MCMC RS: run both in parallel (moderate s/n and no & high corr)
+
+## Iter 1
+
+```{r}
+
+
+X.no.corr = results_n_2000_p_160[['0']][['moderate']]$X.syn
+y.no.corr = results_n_2000_p_160[['0']][['moderate']]$y.syn
+
+X.high.corr = results_n_2000_p_160[['0']][['moderate']]$X.syn
+y.high.corr = results_n_2000_p_160[['0']][['moderate']]$y.syn
+
+
+if (!require(future)) install.packages("future", dependencies=TRUE)
+library(future)
+
+# 1st attempt failed. 
+#Error in loadNamespace(j <- i[[1L]], c(lib.loc, .libPaths()), versionCheck = vI[[j]]) : 
+#  namespace 'parallelly' 1.43.0 is being loaded, but >= 1.44.0 is required
+#Calls: <Anonymous> ... namespaceImportFrom -> asNamespace -> loadNamespace
+#Execution halted
+#ERROR: lazy loading failed for package 'future'
+#* removing 'C:/Users/Keith/AppData/Local/R/win-library/4.3/future'
+#Warning in install.packages :
+#  installation of package ‘future’ had non-zero exit status
+# SOLUTION:
+# 1. get version number
+# packageVersion("parallelly") 
+# 2. make sure to have RTools installed, and click "Tools" -> "Check for
+# Package Updates" and scroll to "Parallelly"
+# install.packages("parallelly") 
+
+plan(multisession, workers = 2) # or however many cores you want
+
+f1 <- future({
+  suppressWarnings(
+    Gibbs.random.search(
+      rep(1, ncol(X.no.corr)),
+      data.frame(cbind(X.no.corr, y.no.corr)),
+      burnin = 200,
+      iter = 1000,
+      penalty = 'BIC'
+    )
+  )
+})
+
+f2 <- future({
+  suppressWarnings(
+    Gibbs.random.search(
+      rep(1, ncol(X.high.corr)),
+      data.frame(cbind(X.high.corr, y.high.corr)),
+      burnin = 200,
+      iter = 1000,
+      penalty = 'BIC'
+    )
+  )
+})
+
+gibbs.RS.study2.moderate.no.corr <- value(f1)
+gibbs.RS.study2.moderate.high.corr <- value(f2)
+
+saveRDS(gibbs.RS.study2.moderate.no.corr,
+        here("output",
+             BASE_DIR,
+             "gibbs_samples_n_2000_p_160_no_corr.rds"))
+
+saveRDS(gibbs.RS.study2.moderate.high.corr,
+        here("output",
+             BASE_DIR,
+             "gibbs_samples_n_2000_p_160_high_corr.rds"))
+
+
+```
+
+
+### Inferences
+
+#### Relative freqs
+
+```{r}
+# relative frequencies
+rel.freq.inference(gibbs.RS.study2.moderate.no.corr, CUTOFF=0.5)
+rel.freq.inference(gibbs.RS.study2.moderate.high.corr, CUTOFF=0.5)
+
+
+saveRDS(rel.freq.inference(gibbs.RS.study2.moderate.no.corr, CUTOFF=0.5),
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c1.rel.freqs.rds"))
+
+
+saveRDS(rel.freq.inference(gibbs.RS.study2.moderate.high.corr, CUTOFF=0.5),
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c2.rel.freqs.rds"))
+
+
+```
+
+
+#### Empirical Mode
+
+```{r}
+
+# find MAP
+saveRDS(colnames(X.no.corr)[
+  as.logical(find_MAP(gibbs.RS.study2.moderate.no.corr))
+],
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c1.best.Xs.rds"))
+
+
+saveRDS(colnames(X.high.corr)[
+  as.logical(find_MAP(gibbs.RS.study2.moderate.high.corr))
+],
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c2.best.Xs.rds"))
+
+
+print("Empirical Mode for Moderate s/n, no correlation below")
+readRDS(here("output", BASE_DIR, "gibbs.RS.c1.best.Xs.rds"))
+
+print("Empirical Mode for Moderate s/n, high correlation below")
+readRDS(here("output", BASE_DIR, "gibbs.RS.c2.best.Xs.rds"))
+
+```
+
+
+#### BIC Minimizers
+```{r}
+
+# find BIC minimizers
+
+saveRDS(suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.no.corr, y.no.corr)), gibbs.RS.study2.moderate.no.corr)
+  ),
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c1.best.Xs.BIC.rds"))
+
+
+saveRDS(suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.high.corr, y.high.corr)), gibbs.RS.study2.moderate.high.corr)
+),
+        here("output",
+             BASE_DIR,
+             "gibbs.RS.c2.best.Xs.BIC.rds"))
+
+
+print("BIC Minimizer for Moderate s/n, no correlation below")
+readRDS(here("output", BASE_DIR, "gibbs.RS.c1.best.Xs.BIC.rds"))
+
+print("BIC Minimizer for Moderate s/n, high correlation below")
+readRDS(here("output", BASE_DIR, "gibbs.RS.c2.best.Xs.BIC.rds"))
+
+```
+
+
+#### P-charts
+
+```{r}
+# p charts
+# Suppose 'samples' is your matrix (K x p) of 0/1 indicator samples
+Gibbs.RS.p.chart(gibbs.RS.study2.moderate.no.corr)
+
+# Suppose 'samples' is your matrix (K x p) of 0/1 indicator samples
+Gibbs.RS.p.chart(gibbs.RS.study2.moderate.high.corr)
+
+```
+
+#### Heuristic convergence metrics
+```{r}
+# note these are sorted descendingly by default by (for each variable k)
+# D = |p_k^(T/2) - p_k^(T)|
+cm_no_corr = convergence_metrics(gibbs.RS.study2.moderate.no.corr)
+cm_high_corr = convergence_metrics(gibbs.RS.study2.moderate.high.corr)
+```
+
+
+```{r}
+cm_no_corr
+```
+
+
+```{r}
+cm_high_corr %>% arrange(desc(M))
+```
+
+### P-charts for slowest converging variables
+
+#### Based on D
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.no.corr,
+                                metric = "D")
+```
+
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.high.corr,
+                                metric = "D")
+```
+
+#### Based on M
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.no.corr,
+                                metric = "M")
+```
+
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.high.corr,
+                                metric = "M")
+```
+
+#### Based on MCSE
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.no.corr,
+                                metric = "MCSE")
+```
+
+```{r}
+p_chart_slowest_converging_vars(gibbs.RS.study2.moderate.high.corr,
+                                metric = "MCSE")
+```
+
+
+
+### Save Summary Statistics
+
+# Format into latex table
+
+## Functions
+
+```{r}
+
+make_summary_table = function(path_base=here("output", "simulation_factorial_analysis_outputs"),
+                              meta=tibble(
+                                  combination = 1:15,
+                                  correlation = rep(c("0", "+0.5", "+0.9", "-0.5", "-0.9"), 3),
+                                  s_n = rep(c("high", "moderate", "weak"), each = 5)
+                                )){
+  
+  # Ground truth variables
+  ground_truth_vars <- paste0("X", 1:4)
+  
+  # Initialize empty list to collect rows
+  all_results <- vector("list", length = nrow(meta))
+  
+  for (i in 1:nrow(meta)) {
+    combo_id <- paste0("c", i)
+  
+    # Read relative frequencies
+    rel_freq_obj <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".rel.freqs.rds")))
+    rel_freqs <- rel_freq_obj$rel.freqs.non.basin
+  
+    # Read empirical mode (most common model in MCMC)
+    empirical_mode <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".best.Xs.rds")))
+  
+    # Read BIC-selected model
+    bic_model_obj <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".best.Xs.BIC.rds")))
+    bic_model <- names(which(bic_model_obj$best.model == 1))
+    min_bic <- bic_model_obj$min.BIC
+  
+    # Logical check: were all GT variables recovered?
+    recovered_all_gt_emp <- all(ground_truth_vars %in% empirical_mode)
+    recovered_all_gt_bic <- all(ground_truth_vars %in% bic_model)
+  
+    # Combine into one row (as tibble)
+    row <- tibble(
+      Combination = i,
+      Correlation = meta$correlation[i],
+      Signal_to_Noise = meta$s_n[i],
+      Empirical_Mode = paste(empirical_mode, collapse = ", "),
+      BIC_Model = paste(bic_model, collapse = ", "),
+      Min_BIC = min_bic,
+      Recovered_GT_Empirical = recovered_all_gt_emp,
+      Recovered_GT_BIC = recovered_all_gt_bic
+    ) %>%
+      bind_cols(as_tibble(t(rel_freqs)))  # Add relative freq columns
+  
+    all_results[[i]] <- row
+  }
+
+  # Final summary table
+  return(bind_rows(all_results))
+}
+
+# install.packages(c("dplyr","knitr","kableExtra"))
+# a little helper to turn one SNR‐subset into a LaTeX table
+make_snr_table <- function(df, snr_level) {
+  sub <- df %>%
+    filter(Signal_to_Noise == snr_level) %>%
+    select(
+      Correlation,
+      `v1 freq` = X1,
+      `v2 freq` = X2,
+      `v3 freq` = X3,
+      `v4 freq` = X4,
+      `Empirical mode`    = Empirical_Mode,
+      `BIC model`         = BIC_Model,
+      `Min. BIC`          = Min_BIC
+    )
+  
+  cap <- paste0("Summary statistics for \\textbf{", snr_level,
+                "} signal‐to‐noise across correlation levels")
+  
+  sub %>%
+    kable(
+      format       = "latex",
+      booktabs     = TRUE,
+      caption      = cap,
+      label        = paste0("tab:", snr_level),
+      align        = c("l", rep("c", ncol(sub)-1)),
+      escape       = FALSE
+    ) %>%
+    kable_styling(latex_options = c("hold_position","scale_down")) %>%
+    column_spec(1, bold = TRUE)
+}
+
+# generate result tables for latex report
+
+make_sim_study_tables = function(summary_table_filtered){
+  # now loop over each SNR level and cat() the tables
+  snrs <- unique(summary_table_filtered$Signal_to_Noise)
+  for (snr in snrs) {
+    cat("\n\n", make_snr_table(summary_table_filtered, snr), "\n\n")
+  }
+}
+
+```
+
+
+
+## Make the summary table
+```{r}
+summary_table_n_2000_p_160 = make_summary_table(here("output", BASE_DIR),
+                   tibble(
+                     combination = 1:2,
+                     correlation = c("0", "+0.9"),
+                     s_n = c("moderate", "moderate")
+ ))
+
+
+SUMMARY_TABLE_COLS_TO_EXCLUDE = c(sapply(5:16, function(i) paste0("X",i)), "Combination")
+summary_table_n_2000_p_160_filtered = summary_table[,!colnames(summary_table) %in% SUMMARY_TABLE_COLS_TO_EXCLUDE]
+
+```
+
+
+```{r}
+summary_table_n_2000_p_160
+```
+
+
+## Make the latex-formatted summary table
+```{r}
+make_sim_study_tables(summary_table_n_2000_p_160)
+```
+
+
+# Brainstorm code to run in RCP
+
+```{r}
+
+```
+
+
+
+
+
+
+
+

@@ -1,0 +1,4365 @@
+---
+title: "analyze_MH_lambda_for_writeup"
+author: "Keith Howen"
+date: "2025-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+## Check working directory
+```{r}
+library(here)
+here()
+```
+
+# Import all libraries (incl. custom)
+
+```{r}
+
+source(here("lib", "load_and_preprocess_TC.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+#library(mvtnorm)
+#library(truncnorm)
+#library(Matrix)
+library(ggplot2)
+#library(splitstackshape)
+#install.packages('reshape2')
+library(reshape2)
+library(glmnet)
+#install.packages('caret')
+library(caret)
+
+
+# for HL test
+#install.packages('glmtoolbox')
+library(glmtoolbox)
+
+#install.packages('PRROC')
+library(PRROC)
+
+library(cowplot)
+
+library(diptest)
+
+library(purrr)
+
+
+library(kableExtra)
+
+#install.packages("xtable")
+library(xtable)
+
+library(glmnet)
+
+
+#install.packages("ResourceSelection")
+library(ResourceSelection)  # for hoslem.test
+
+library(glmtoolbox)
+
+library(predtools)
+library(magrittr)
+
+
+library(energy)
+
+library(posterior)
+
+library(stringr)
+
+library(precrec)
+
+library(ggtext) 
+
+
+library(xtable)
+
+```
+
+
+
+# Import MH lambda results
+
+```{r}
+library(here)
+library(dplyr)
+library(purrr)
+library(ggplot2)
+library(tidyr)
+library(stringr)
+
+# Directory containing all MH chain runs
+mh_dir <- here("output", "mh_runs_4_lambda_run_2")
+
+# Get all MH chain result files
+mh_files <- list.files(mh_dir, pattern = "^mh_lambda_.*_chain_.*\\.rds$", full.names = TRUE)
+
+# Function to extract the *minimum* BIC per chain
+extract_min_bic <- function(path) {
+  obj <- readRDS(path)
+  s <- obj$summary
+  bic_min <- min(obj$rs$bic_trace * 0.5)
+  tibble(
+    lambda = s$lambda,
+    chain  = factor(s$chain),
+    init   = s$init,
+    min_bic = bic_min
+  )
+}
+
+# Combine all into one table
+bic_summary <- map_dfr(mh_files, extract_min_bic)
+
+# For plotting aesthetics
+chain_labels <- c("1: full", "2: empty", "3: sparse", "4: random")
+chain_colors <- c("#E66101", "#5E3C99", "#4DAC26", "#FFD700")
+
+bic_summary <- bic_summary %>%
+  mutate(chain = factor(chain, levels = 1:4, labels = chain_labels)) %>%
+  arrange(lambda, chain)
+
+# Compute minimum BIC across all 4 chains for each lambda
+bic_min_by_lambda <- bic_summary %>%
+  group_by(lambda) %>%
+  summarise(global_min_bic = min(min_bic))
+
+# Merge back for annotation
+bic_summary <- left_join(bic_summary, bic_min_by_lambda, by = "lambda")
+
+# Plot stacked bar chart
+ggplot(bic_summary, aes(x = lambda, y = min_bic, fill = chain)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.6) +
+  geom_text(
+    data = bic_min_by_lambda,
+    aes(x = lambda, y = global_min_bic * 1.02,
+        label = sprintf("min BIC = %.1f", global_min_bic)),
+    inherit.aes = FALSE, hjust = 0, size = 3.5
+  ) +
+  scale_fill_manual(values = chain_colors, name = "Chain") +
+  scale_x_continuous(breaks = sort(unique(bic_summary$lambda))) +
+  coord_flip() +
+  labs(
+    x = expression(lambda),
+    y = "Minimum BIC per chain",
+    title = "Minimum BIC across chains for each λ",
+    subtitle = "Bars show chain-wise minima; text shows global minimum per λ"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+```
+```{r}
+xtable(bic_summary %>% arrange(global_min_bic, min_bic) %>% select(-init) %>% mutate(min_bic_diff_to_global = min_bic - global_min_bic))
+```
+
+
+
+## Acceptance rate, distinct models for all lambdas
+```{r}
+names(mh_lambda_0.10_chain_1)
+
+mh_lambda_0.10_chain_3$summary
+```
+
+```{r}
+library(here)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(tidyr)
+
+# Directory where all MH runs live
+mh_dir <- here("output", "mh_runs_4_lambda_run_2")
+
+# Identify all chain result files
+mh_files <- list.files(mh_dir, pattern = "^mh_lambda_.*\\.rds$", full.names = TRUE)
+
+# Helper to extract summary metadata from each file
+extract_summary <- function(path) {
+  obj <- readRDS(path)
+  s <- obj$summary
+  tibble(
+    lambda = s$lambda,
+    chain  = s$chain,
+    init   = s$init,
+    acc    = s$acc,
+    distinct_prop = s$distinct_prop,
+    mean_active   = s$mean_active
+  )
+}
+
+# Read and combine all summaries
+mh_summary <- map_dfr(mh_files, extract_summary)
+
+# Optional: order chain IDs consistently
+mh_summary <- mh_summary %>%
+  mutate(chain = factor(chain, levels = 1:4,
+                        labels = c("1: full", "2: empty", "3: sparse", "4: random"))) %>%
+  arrange(lambda, chain)
+
+# Pivot wider to make 2-way table (lambda × chain)
+distinct_table <- mh_summary %>%
+  select(lambda, chain, distinct_prop) %>%
+  pivot_wider(names_from = chain, values_from = distinct_prop)
+
+# Optionally include mean_active in parentheses
+distinct_table_with_dim <- mh_summary %>%
+  mutate(entry = sprintf("%.3f (%.0f)", distinct_prop, mean_active)) %>%
+  select(lambda, chain, entry) %>%
+  pivot_wider(names_from = chain, values_from = entry)
+
+# Show result
+distinct_table_with_dim
+
+```
+
+```{r}
+xtable(distinct_table_with_dim)
+```
+
+
+## Read best BIC minimizers for ALL lambda
+
+```{r}
+
+best_BIC_minimizer_all_lambda = readRDS(here("output", "mh_runs_4_lambda_run_2", "res_lam_all_0.1_to_3.rds"))
+
+```
+
+
+
+
+```{r}
+names(best_BIC_minimizer_all_lambda)
+```
+
+```{r}
+best_BIC_minimizer_all_lambda$elite
+# variable names are in varnames_elites s.t. 
+# varnames_elites[[i]] correspond to i-th row of best_BIC_minimizer_all_lambda$elite
+```
+
+```{r}
+print(best_BIC_minimizer_all_lambda$elite,
+      n=40)
+```
+```{r}
+xtable(best_BIC_minimizer_all_lambda$elite %>% select(-key))
+```
+
+
+### Elite sets
+
+```{r}
+# around 38 models with BIC within 2 of the best
+best_BIC_minimizer_all_lambda$elite
+```
+
+
+
+
+#### Simplest model amongst elite sets
+
+We have a model with BIC only <2 higher with only 50 variables.
+
+```{r}
+
+best_simplest_model_bin = (best_BIC_minimizer_all_lambda$elite %>% filter(k==50))$key 
+best_simplest_model_bin = str_split(best_simplest_model_bin, "")[[1]]
+best_simplest_model_bin = sapply(
+  best_simplest_model_bin, function(x)as.logical(as.numeric(x))
+)
+
+```
+
+
+```{r}
+best_simplest_model_varnames = colnames(X)[best_simplest_model_bin]
+```
+
+
+```{r}
+# variable names that the best and the simplest elite agree with
+best_varnames_best_and_simplest = intersect(
+  best_BIC_minimizer_all_lambda$best$variables,
+  best_simplest_model_varnames
+)
+```
+
+
+
+```{r}
+# Vars in the elite simplest model that are not in the best
+setdiff(best_simplest_model_varnames, best_varnames_best_and_simplest)
+```
+
+
+```{r}
+# Vars in the best model that are not in the simplest
+setdiff(best_BIC_minimizer_all_lambda$best$variables, best_varnames_best_and_simplest)
+```
+
+#### "Core variables": Intersection of elite sets
+
+```{r}
+# 1. map each binary string to variable names
+varnames_elites = sapply(
+  best_BIC_minimizer_all_lambda$elite$key,
+  
+  function(bin_key){
+    # split "1100" as c("1","1","0","0"), say
+    bin_key = str_split(bin_key, "")[[1]]
+    # convert "1" to TRUE, "0" to FALSE
+    bin_key = sapply(
+      bin_key, function(x)as.logical(as.numeric(x))
+    )
+    # map logical cols to actual colnames
+    colnames(X)[bin_key]
+  }, 
+  
+  USE.NAMES=FALSE
+)
+
+
+
+# 2. obtain the intersection 
+# one way: apply intersect() repeteadly
+core_vars_among_elites = Reduce(intersect,varnames_elites)
+
+core_vars_among_elites
+```
+### Summarize elite models to latex
+```{r}
+
+summarize_elite_models = function(varnames_elites){
+    # --- helpers: parse family + levels ---------------------------------------
+  
+  # normalize family names into readable labels (optional tweak as you like)
+  pretty_family <- function(fam) {
+    fam <- gsub("_", " ", fam, fixed = TRUE)
+    fam <- gsub("vorticity relative", "relative vorticity", fam, fixed = TRUE)
+    fam <- gsub("vertical wind shear between", "vertical wind shear", fam, fixed = TRUE)
+    fam <- gsub("equiv pot temperature diff between surface and 500 hPa",
+                "equivalent potential temperature diff (surface–500 hPa)", fam, fixed = TRUE)
+    fam <- gsub("Coriolis parameter absolute", "Coriolis parameter (absolute)", fam, fixed = TRUE)
+    fam
+  }
+  
+  # extract "family" (physical variable class)
+  extract_family <- function(x) {
+    # patterns:
+    # 1) vertical_wind_shear_between_<a>_hPa_and_<b>_hPa
+    if (str_detect(x, "^vertical_wind_shear_between_")) return("vertical_wind_shear")
+    # 2) <something>_at_<level>_hPa  -> family = part before _at_
+    if (str_detect(x, "_at_\\d+_hPa$")) return(str_replace(x, "_at_\\d+_hPa$", ""))
+    # 3) everything else: as is (e.g., sea_surface_temperature, Coriolis_parameter, wind_u)
+    x
+  }
+  
+  # extract a compact “level” label
+  extract_level <- function(x) {
+    # between_<a>_hPa_and_<b>_hPa
+    m_between <- str_match(x, "between_(\\d+)_hPa_and_(\\d+)_hPa$")
+    if (!is.na(m_between[1,1])) {
+      a <- as.integer(m_between[1,2]); b <- as.integer(m_between[1,3])
+      return(sprintf("%d–%d hPa", min(a,b), max(a,b)))
+    }
+    # _at_<a>_hPa
+    m_at <- str_match(x, "_at_(\\d+)_hPa$")
+    if (!is.na(m_at[1,1])) return(sprintf("%s hPa", m_at[1,2]))
+    # no explicit level
+    return(NA_character_)
+  }
+  
+  # --- reshape all elites into long df --------------------------------------
+  
+  elite_long <- imap_dfr(
+    varnames_elites,
+    ~ tibble(
+        model_id = .y,
+        variable = .x
+      )
+  ) %>%
+    mutate(
+      family_raw = vapply(variable, extract_family, character(1)),
+      family     = pretty_family(family_raw),
+      level      = vapply(variable, extract_level, character(1))
+    )
+  
+  # --- % presence per family across elite models ----------------------------
+  
+  # flag presence (per model) if ANY level of a family appears
+  present_per_model_family <- elite_long %>%
+    distinct(model_id, family) %>%
+    mutate(present = 1L)
+  
+  n_models <- length(varnames_elites)
+  
+  presence_tbl <- present_per_model_family %>%
+    count(family, wt = present, name = "n_models_with_family") %>%
+    mutate(present_pct = 100 * n_models_with_family / n_models)
+  
+  # --- representative levels per family -------------------------------------
+  
+  # collect unique levels seen for each family; compact the label
+  levels_tbl <- elite_long %>%
+    distinct(family, level) %>%
+    filter(!is.na(level)) %>%
+    # split into single-level and between-level for nice ordering
+    mutate(
+      lvl_num_lo = as.integer(str_extract(level, "^\\d+")),
+      lvl_num_hi = as.integer(str_extract(level, "(\\d+) hPa$"))
+    ) %>%
+    group_by(family) %>%
+    summarise(
+      levels_sorted = {
+        # order: single levels asc, then ranges by lower bound
+        levs <- na.omit(level)
+        single <- levs[grepl("^\\d+ hPa$", levs)]
+        rng    <- levs[grepl("^\\d+–\\d+ hPa$", levs)]
+        single <- single[order(as.integer(str_extract(single, "^\\d+")))]
+        rng <- rng[order(as.integer(str_extract(rng, "^\\d+")))]
+        paste(c(single, rng), collapse = ", ")
+      },
+      .groups = "drop"
+    )
+  
+  # some families truly have no pressure level (e.g., SST, Coriolis)
+  no_level_fams <- setdiff(elite_long$family, levels_tbl$family)
+  no_level_tbl  <- tibble(family = no_level_fams, levels_sorted = "—")
+  
+  # --- final compact summary table ------------------------------------------
+  
+  elite_summary <- presence_tbl %>%
+    bind_rows() %>%
+    left_join(bind_rows(levels_tbl, no_level_tbl), by = "family") %>%
+    # nicer column order/labels
+    transmute(
+      `Physical variable`                 = family,
+      `Representative pressure levels`    = levels_sorted,
+      `Present in (% of elite models)`    = round(present_pct, 1)
+    ) %>%
+    arrange(desc(`Present in (% of elite models)`),
+            `Physical variable`)
+  
+  elite_summary
+}
+
+```
+
+
+```{r}
+summary_elite_models = summarize_elite_models(varnames_elites)
+```
+
+```{r}
+print(
+  xtable(
+   summary_elite_models
+    ),
+  type = "latex",
+  #add.to.row = rows_to_color,
+  floating=TRUE
+)
+```
+
+
+### Fit a logreg model on best variables
+
+```{r}
+
+best.model.MH = glm(y ~ .,
+      family=binomial,
+      data=data.frame(
+        scale(X[, best_BIC_minimizer_all_lambda$best$variables]),y)
+      )
+
+summary(best.model.MH)
+```
+#### Plot coeffs/ log odds ratio
+
+```{r, fig.width=20}
+
+
+best.model.log.ORs = summary(best.model.MH)$coefficients[,'Estimate']
+
+
+best.model.ORs.df = data.frame(
+  vars = names(best.model.log.ORs),
+  coeffs = best.model.log.ORs
+)
+
+ggplot(data=best.model.ORs.df,
+       aes(x=reorder(vars, -coeffs), y=coeffs)) + 
+      geom_bar(stat="identity") + 
+      coord_flip()
+
+
+```
+
+#### HL test for best model
+
+```{r}
+
+hltest(best.model.MH, verbose=TRUE)
+
+
+```
+
+
+## Read samples from lambda=0.1
+```{r}
+mh_lambda_0.10_chain_1 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.10_chain_1_full.rds"))
+
+mh_lambda_0.10_chain_2 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.10_chain_2_empty.rds"))
+
+mh_lambda_0.10_chain_3 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.10_chain_3_sparse.rds"))
+
+mh_lambda_0.10_chain_4 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.10_chain_4_random.rds"))
+
+mh_lambda_0.10_samples = rbind(mh_lambda_0.10_chain_1$rs$samples,
+                       mh_lambda_0.10_chain_2$rs$samples,
+                       mh_lambda_0.10_chain_3$rs$samples,
+                       mh_lambda_0.10_chain_4$rs$samples)
+
+```
+
+
+### Find correlation between indicators
+
+```{r}
+
+corr_indicators = cor(mh_lambda_0.10_chain_1$rs$samples)
+diag(corr_indicators) = NA
+
+
+max(corr_indicators, na.rm = TRUE)
+min(corr_indicators, na.rm = TRUE)
+
+
+```
+
+```{r}
+
+corr_indicators = cor(mh_lambda_0.10_chain_2$rs$samples)
+diag(corr_indicators) = NA
+
+
+max(corr_indicators, na.rm = TRUE)
+min(corr_indicators, na.rm = TRUE)
+
+
+```
+
+```{r}
+
+corr_indicators = cor(mh_lambda_0.10_chain_3$rs$samples)
+diag(corr_indicators) = NA
+
+
+max(corr_indicators, na.rm = TRUE)
+min(corr_indicators, na.rm = TRUE)
+
+
+```
+
+### Convergence
+
+#### GR
+```{r}
+list.files(here("output", "mh_runs_4_lambda_run_2_diagostic"))
+```
+```{r}
+GR_diag_0.10 = readRDS(here("output",
+                            "mh_runs_4_lambda_run_2_diagostic",
+                            "GR_diag_0.10.rds"))
+```
+
+```{r}
+GR_diag_0.10
+```
+#### P-chart
+
+```{r}
+p_chart_slowest_converging_vars(mh_lambda_0.10_chain_1$rs$samples,
+                                metric='MCSE')
+```
+
+#### Chisq (auto)
+
+
+```{r}
+stationarity_chisq <- function(
+  S,                      # numeric vector (one long chain) OR list of numeric vectors (q chains)
+  k0 = 0,                 # extra burn-in to drop per chain
+  q  = NULL,              # number of sub-sequences (if NULL and S is a vector, chosen automatically)
+  r  = NULL,              # number of intervals (if NULL, chosen automatically)
+  breaks = c("quantile", "equalwidth"),  # how to make r bins
+  min_expected = 5,       # target >= 5 expected counts/cell
+  simulate_p = FALSE,     # if some cells < 5, use Monte Carlo p-value
+  B = 10000               # replicates for Monte Carlo p-value (chisq.test)
+) {
+  breaks <- match.arg(breaks)
+
+  # --- helper: coerce input to list of q sub-sequences, each length K ---
+  to_blocks <- function(S, k0, q) {
+    if (is.list(S)) {
+      # q chains provided
+      chains <- lapply(S, function(x) {
+        stopifnot(is.numeric(x))
+        if (k0 >= length(x)) stop("k0 >= chain length.")
+        x[(k0 + 1):length(x)]
+      })
+      K <- min(sapply(chains, length))
+      if (K < 10) stop("Not enough post-burn draws per chain for splitting.")
+      blocks <- lapply(chains, function(x) x[(length(x) - K + 1):length(x)])
+      list(blocks = blocks, q = length(blocks), K = K)
+    } else {
+      # single long chain: split into q blocks after burn-in
+      x <- as.numeric(S)
+      if (k0 >= length(x)) stop("k0 >= chain length.")
+      x <- x[(k0 + 1):length(x)]
+      if (is.null(q)) {
+        # aim for at least ~100 per block, but ≥ 2 blocks
+        q <- max(2L, min(10L, floor(length(x) / 100)))
+      }
+      K <- floor(length(x) / q)
+      if (K < 10) stop("Not enough draws per block; decrease q or k0.")
+      # take the last q*K draws so blocks are equal length
+      x <- tail(x, q * K)
+      blocks <- split(x, rep(seq_len(q), each = K))
+      list(blocks = blocks, q = q, K = K)
+    }
+  }
+
+  blk <- to_blocks(S, k0 = k0, q = q)
+  blocks <- blk$blocks; q <- blk$q; K <- blk$K
+
+  # --- choose r if missing to satisfy ~>= min_expected expected per cell ---
+  N_total <- q * K
+  if (is.null(r)) {
+    r <- max(2L, min(10L, floor(N_total / (min_expected * q))))
+  }
+
+  # --- define bin edges over pooled S ---
+  pooled <- unlist(blocks, use.names = FALSE)
+  if (breaks == "quantile") {
+    # quantile bins give near-balanced row totals -> helps the 5-per-cell rule
+    probs <- seq(0, 1, length.out = r + 1)
+    # jitter duplicates in extremes to avoid identical breaks
+    qs <- as.numeric(stats::quantile(pooled, probs, type = 7, na.rm = TRUE))
+    eps <- .Machine$double.eps^0.25
+    qs <- unique(qs)  # guard: if r is too large for unique values, reduce r
+    if (length(qs) < r + 1) {
+      r <- length(qs) - 1L
+      if (r < 2) stop("Too few unique values in S to form >=2 bins.")
+    }
+    brks <- if (length(qs) == r + 1) qs else stats::quantile(pooled, seq(0, 1, length.out = r + 1))
+    brks[1]  <- brks[1]  - eps
+    brks[r+1] <- brks[r+1] + eps
+  } else {
+    brks <- seq(min(pooled), max(pooled), length.out = r + 1)
+  }
+
+  # --- build r x q contingency table ---
+  binlab <- function(x) cut(x, breaks = brks, include.lowest = TRUE, right = TRUE)
+  tab <- sapply(blocks, function(b) table(binlab(b)))
+  # ensure matrix with rownames (intervals) and colnames (block index)
+  if (is.null(dim(tab))) tab <- matrix(tab, nrow = r)
+  rownames(tab) <- levels(binlab(pooled))
+  colnames(tab) <- paste0("block_", seq_len(q))
+
+  # --- chi-squared test of independence ---
+  # check expected counts
+  exp_counts <- suppressWarnings(chisq.test(tab)$expected)
+  small <- any(exp_counts < min_expected)
+
+  test <- suppressWarnings(
+    chisq.test(tab, simulate.p.value = simulate_p || small, B = B)
+  )
+
+  list(
+    p_value = unname(test$p.value),
+    statistic = unname(test$statistic),
+    df = unname(test$parameter),
+    small_expected = small,
+    method = if (simulate_p || small) "Chi-squared with simulated p-value" else "Pearson Chi-squared",
+    r = r, q = q, K = K, k0 = k0,
+    breaks = brks,
+    table = tab
+  )
+}
+```
+
+
+```{r}
+start_time = Sys.time()
+
+#S_list <- lapply(trimmed, function(S) {
+#  apply(S, 1, function(v) compute.BIC(data.frame(X, y), v))
+#})
+
+
+
+S_list_MH = list()
+i=1
+S_list_MH[[i]] = mh_lambda_0.10_chain_1$rs$bic_trace; i = i + 1
+
+S_list_MH[[i]] = mh_lambda_0.10_chain_2$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.10_chain_3$rs$bic_trace; i = i + 1
+
+S_list_MH[[i]] = mh_lambda_0.10_chain_4$rs$bic_trace; i = i + 1
+
+# CONSIDER SAVING S_List!!!
+
+# no need burn-in -- already calibrated
+out <- stationarity_chisq(S_list_MH,
+                          k0 = 20,
+                          breaks='equalwidth',
+                          r=2,
+                          simulate_p = FALSE)
+
+end_time = Sys.time()
+cat("Overall time taken (minutes): ",
+      as.numeric(end_time - start_time, units = "mins"),
+      "\n")
+out
+
+```
+
+#### Chisq (manual)
+
+
+```{r}
+# 1. get all BIC values
+BIC_MH_EXTRA_BURNIN = 2
+S_list_MH = list()
+i=1
+S_list_MH[[i]] = mh_lambda_0.10_chain_1$rs$bic_trace[-c(1:BIC_MH_EXTRA_BURNIN)]; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.10_chain_2$rs$bic_trace[-c(1:BIC_MH_EXTRA_BURNIN)]; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.10_chain_3$rs$bic_trace[-c(1:BIC_MH_EXTRA_BURNIN)]; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.10_chain_4$rs$bic_trace[-c(1:BIC_MH_EXTRA_BURNIN)]; i = i + 1
+
+# 2. create q bins from the range of the BICs in all chains
+S_list_MH_combined = unlist(S_list_MH)
+
+want_equal_width = FALSE
+
+if (want_equal_width){
+  S_list_MH_combined_min = min(S_list_MH_combined)
+  S_list_MH_combined_max = max(S_list_MH_combined)
+  range = S_list_MH_combined_max - S_list_MH_combined_min
+  breaks = seq(S_list_MH_combined_min, S_list_MH_combined_max, length.out=3)
+} else{
+  breaks = quantile(S_list_MH_combined, probs=seq(0,1,by=0.25), na.rm=TRUE)
+}
+
+
+
+# 3. create frequency table
+BIC_MH_table = matrix(NA, nrow=length(breaks)-1, ncol=length(S_list_MH))
+
+for (i in 1:length(S_list_MH)){
+  BIC_list = S_list_MH[[i]]
+  BIC_binned = cut(BIC_list, breaks=breaks, include.lowest=TRUE, right=TRUE)
+  
+  BIC_MH_table[,i] = as.vector(table(BIC_binned))
+}
+
+
+BIC_MH_table
+
+
+chisq.test(BIC_MH_table)
+
+
+```
+
+#### Raftery diag
+
+```{r}
+library(coda)
+
+?raftery.diag
+
+
+raftery.diag(
+  as.mcmc(S_list_MH[[1]])
+)
+```
+
+
+
+
+## Read samples from lambda=0.75
+
+```{r}
+mh_lambda_0.75_chain_3 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.75_chain_3_sparse.rds"))
+
+mh_lambda_0.75_chain_1 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.75_chain_1_full.rds"))
+
+mh_lambda_0.75_chain_2 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.75_chain_2_empty.rds"))
+
+mh_lambda_0.75_chain_4 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.75_chain_4_random.rds"))
+
+```
+
+```{r}
+mh_lambda_0.75_chains = list(
+  mh_lambda_0.75_chain_1,
+  mh_lambda_0.75_chain_2,
+  mh_lambda_0.75_chain_3,
+  mh_lambda_0.75_chain_4
+)
+```
+
+### Raftery diag
+
+```{r}
+library(coda)
+
+?raftery.diag
+
+
+raftery.diag(as.mcmc(unlist(readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      "mh_lambda_0.10_chain_2_empty.rds"))$rs$bic_trace)))
+```
+
+### Find correlation between indicators
+```{r}
+
+corr_indicators = cor(mh_lambda_0.75_chain_3$rs$samples)
+diag(corr_indicators) = NA
+
+
+melt(corr_indicators)[
+  order(melt(corr_indicators)$value),
+]
+
+
+```
+
+
+```{r}
+
+corr_indicators = cor(mh_lambda_0.75_chain_1$rs$samples)
+diag(corr_indicators) = NA
+
+
+melt(corr_indicators)[
+  order(melt(corr_indicators)$value),
+]
+
+
+```
+
+```{r}
+# samples is your post–burn-in 0/1 matrix (iters x p)
+pair_stats <- function(samples, v1, v2) {
+  x <- samples[, v1]; y <- samples[, v2]
+  tab <- table(x, y)  # 2x2 co-inclusion table
+  p1  <- mean(x); p2 <- mean(y)
+  p11 <- mean(x & y)
+  phi <- cor(x, y)               # same as Pearson on binaries
+  jac <- if (p11 == 0 && (p1+p2-p11)==0) NA_real_ else p11 / (p1 + p2 - p11) # Jaccard
+  list(p1 = p1, p2 = p2, p11 = p11, phi = phi, jaccard = jac, table = tab)
+}
+
+# find top K most negative pairs
+top_anticor_pairs <- function(samples, K = 25) {
+  C <- cor(samples); diag(C) <- NA
+  o <- order(C, na.last = NA)  # increasing → most negative first
+  idx <- arrayInd(o[seq_len(K)], dim(C))
+  data.frame(
+    var1 = colnames(samples)[idx[,1]],
+    var2 = colnames(samples)[idx[,2]],
+    phi  = C[ o[seq_len(K)] ],
+    stringsAsFactors = FALSE
+  )
+}
+
+# Example:
+S <- mh_lambda_0.75_chain_3$rs$samples
+neg <- top_anticor_pairs(S, K = 20)
+neg
+pair_stats(S, "divergence_at_1000_hPa", "vertical_velocity_at_925_hPa")
+
+```
+
+### GR
+```{r}
+GR_diagnostics_v2 <- function(results,
+                           split_chains = TRUE,
+                           drop_rule = c("per_chain","global","none"),
+                           rhat_cut = 1.05) {
+  stopifnot(is.list(results), length(results) >= 2)
+  if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+  drop_rule <- match.arg(drop_rule)
+
+  # 1) Collect raw indicator matrices per chain
+  mats <- lapply(results, function(S) {
+    stopifnot(is.matrix(S))
+    S
+  })
+
+  # 2) Split each chain into two halves (BDA3 recommendation)
+  if (split_chains) {
+    mats <- unlist(lapply(mats, function(S) {
+      n <- nrow(S); h <- floor(n/2)
+      list(S[1:h, , drop = FALSE], S[(h+1):n, , drop = FALSE])
+    }), recursive = FALSE)
+  }
+
+  p <- ncol(mats[[1]])
+  vnames <- colnames(mats[[1]])
+
+  # 3) Choose variables to keep (avoid degeneracy)
+  keep <- rep(TRUE, p); why_drop <- rep(NA_character_, p)
+  if (drop_rule != "none") {
+    if (drop_rule == "per_chain") {
+      wvar <- sapply(mats, function(S) apply(S, 2, var))
+      keep <- apply(wvar > 0, 1, all)
+      why_drop[!keep] <- "degenerate_in_some_chain"
+    } else if (drop_rule == "global") {
+      pooled <- do.call(rbind, mats)
+      keep <- apply(pooled, 2, var) > 0
+      why_drop[!keep] <- "degenerate_globally"
+    }
+  }
+  if (!any(keep)) stop("No non-degenerate variables to diagnose.")
+
+  # 4) Build coda mcmc.list from subchains
+  mlist <- coda::mcmc.list(lapply(mats, function(S) coda::mcmc(S[, keep, drop = FALSE])))
+
+  # 5) Univariate GR and ESS (ESS summed across subchains)
+  gr   <- coda::gelman.diag(mlist, multivariate = FALSE)$psrf
+  ess  <- sapply(seq_len(sum(keep)), function(j)
+           sum(sapply(mats, function(S) coda::effectiveSize(S[, j]))))
+
+  out <- data.frame(
+    variable   = vnames[keep],
+    Rhat_point = gr[, "Point est."],
+    Rhat_upper = gr[, "Upper C.I."],
+    ESS_sum    = ess,
+    converged  = gr[, "Point est."] < rhat_cut
+  )
+  rownames(out) <- NULL
+
+  list(
+    table   = out[order(out$Rhat_point, decreasing = TRUE), ],
+    dropped = data.frame(variable = vnames[!keep], reason = why_drop[!keep]),
+    params  = list(split_chains = split_chains, drop_rule = drop_rule, rhat_cut = rhat_cut)
+  )
+}
+```
+
+```{r}
+
+
+GR_lam_0.75 = GR_diagnostics_v2(list(mh_lambda_0.75_chain_1$rs$samples,
+                                     mh_lambda_0.75_chain_2$rs$samples,
+                                     mh_lambda_0.75_chain_3$rs$samples,
+                                     mh_lambda_0.75_chain_4$rs$samples),
+                                                          rhat_cut = 1.1)
+```
+
+```{r}
+GR_lam_0.75
+```
+
+
+### Chisq 
+```{r}
+S_list_MH = list()
+i=1
+
+S_list_MH[[i]] = mh_lambda_0.75_chain_1$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_2$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_3$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_4$rs$bic_trace; i = i + 1
+
+par(mfrow=c(2,2))
+for (k in 1:length(S_list_MH)){
+  hist(S_list_MH[[k]], breaks=65, col = k+1)
+}
+
+
+# CONSIDER SAVING S_List!!!
+
+# no need burn-in -- already calibrated
+out <- stationarity_chisq(S_list_MH,
+                          k0 = 5000,
+                          breaks='equalwidth',
+                          r=6,
+                          simulate_p = FALSE)
+
+out
+```
+
+```{r}
+BIC_all <- unlist(S_list_MH)
+best    <- min(BIC_all)
+elite_ind_blocks <- lapply(S_list_MH, function(b) 1*(b - best <= 2))
+tab_elite <- table(stack(elite_ind_blocks)$values, stack(elite_ind_blocks)$ind)
+chisq.test(tab_elite, simulate.p.value = FALSE)
+```
+
+
+
+# Rel-freqs
+## Lambda-wise rel freqs
+
+### Function
+```{r}
+plot_rel_freqs_pooled_lam = function(lam,
+                                     want_asy_ci=TRUE,
+                                     alpha=0.1,
+                                     epsilon=0.005,
+                                     want_errorbar=TRUE){
+
+
+  mh_lambda_chain_1 = readRDS(here("output",
+                                        "mh_runs_4_lambda_run_2",
+                                        sprintf("mh_lambda_%.2f_chain_1_full.rds", lam)
+                                        )
+                                   )
+  
+  mh_lambda_chain_2 = readRDS(here("output",
+                                        "mh_runs_4_lambda_run_2",
+                                        sprintf("mh_lambda_%.2f_chain_2_empty.rds", lam)
+                                        )
+                                   )
+  
+  mh_lambda_chain_3 = readRDS(here("output",
+                                      "mh_runs_4_lambda_run_2",
+                                      sprintf("mh_lambda_%.2f_chain_3_sparse.rds", lam)
+                                      )
+                                   )
+  
+  mh_lambda_chain_4 = readRDS(here("output",
+                                        "mh_runs_4_lambda_run_2",
+                                        sprintf("mh_lambda_%.2f_chain_4_random.rds", lam)
+                                        )
+                                   )
+  
+  if (want_asy_ci){
+     inclusion_summary_asy_CI = inclusion_summary_asy_CI(
+                    rbind(mh_lambda_chain_1$rs$samples,
+                          mh_lambda_chain_2$rs$samples,
+                          mh_lambda_chain_3$rs$samples,
+                          mh_lambda_chain_4$rs$samples),
+                  top_k=149,
+                  alpha=alpha,
+                  epsilon=epsilon)
+  
+      p_gt_0.5 = plot_inclusion(
+        inclusion_summary_asy_CI %>% filter(p_hat >= 0.5),
+        title="Inclusion probabilities\n(w/ Asymptotic conservative CI)",
+        errorbar=want_errorbar
+      )
+      
+      p_le_0.5 = plot_inclusion(
+        inclusion_summary_asy_CI %>% filter(p_hat < 0.5),
+        title="Inclusion probabilities\n(w/ Asymptotic conservative CI)",
+        errorbar=want_errorbar
+      )
+      
+      return(
+        list(p_gt_0.5 = p_gt_0.5, p_le_0.5 = p_le_0.5)
+      )
+
+  }
+  
+  incl_summary = inclusion_summary(
+                    rbind(mh_lambda_chain_1$rs$samples,
+                          mh_lambda_chain_2$rs$samples,
+                          mh_lambda_chain_3$rs$samples,
+                          mh_lambda_chain_4$rs$samples),
+                  top_k=149)
+  
+  p_gt_0.5 = plot_inclusion(incl_summary %>% filter(p_hat >= 0.5),
+        errorbar=want_errorbar)
+  
+  p_le_0.5 = plot_inclusion(incl_summary %>% filter(p_hat < 0.5),
+        errorbar=want_errorbar)
+  
+  return(
+    list(p_gt_0.5 = p_gt_0.5, p_le_0.5 = p_le_0.5)
+  )
+  
+
+}
+```
+
+
+
+### lam=0.5
+
+```{r}
+plot_rel_freqs_pooled_lam(0.5, epsilon=1e-30)
+```
+
+
+
+### lam=0.1
+```{r}
+plot_inclusion(
+  inclusion_summary(mh_lambda_0.10_chain_1$rs$samples,
+                  top_k=149)
+)
+
+
+```
+
+
+#### "Cluster" Relative Frequencies
+
+```{r}
+
+dim(mh_lambda_0.10_samples)
+
+mh_lambda_0.10_rel_freqs = rel.freq.inference(mh_lambda_0.10_samples)$rel.freqs.non.basin
+mh_lambda_0.10_rel_freqs = sort(mh_lambda_0.10_rel_freqs, decreasing=TRUE)
+
+plot(mh_lambda_0.10_rel_freqs, type='o')
+
+
+#par(mfrow=c(2,1))
+plot(mh_lambda_0.10_rel_freqs[0:50], type='o')
+```
+
+```{r}
+plot(mh_lambda_0.10_rel_freqs[51:100], type='o')
+```
+
+```{r}
+plot(mh_lambda_0.10_rel_freqs[101:149], type='o')
+```
+```{r}
+find_elbows <- function(f, K = 1, x = NULL) {
+  stopifnot(is.numeric(f), length(f) >= 10, K >= 0, K == as.integer(K))
+  n <- length(f)
+  if (is.null(x)) x <- seq_len(n)
+
+  # cumulative sums
+  c1  <- c(0, cumsum(1 + 0 * x))        # count
+  cx  <- c(0, cumsum(x))
+  cxx <- c(0, cumsum(x * x))
+  cy  <- c(0, cumsum(f))
+  cxy <- c(0, cumsum(x * f))
+  cyy <- c(0, cumsum(f * f))
+
+  sse_seg <- function(i, j) {
+    m   <- j - i + 1L
+    if (m == 1L) return(0)              # single-point segment: zero residual
+    sx  <-  cx[j+1] -  cx[i]
+    sxx <- cxx[j+1] - cxx[i]
+    sy  <-   cy[j+1] -  cy[i]
+    sxy <-  cxy[j+1] - cxy[i]
+    syy <-   cyy[j+1] -  cyy[i]
+
+    XtX <- matrix(c(m, sx, sx, sxx), 2, 2)
+    detXtX <- XtX[1,1] * XtX[2,2] - XtX[1,2] * XtX[2,1]
+    if (detXtX <= 1e-12) return(0)      # numerical guard (shouldn’t happen with m>=2)
+    beta <- solve(XtX, c(sy, sxy))
+    rss  <- syy - sum(beta * c(sy, sxy))
+    max(rss, 0)
+  }
+
+  Kseg <- K + 1L
+  dp   <- matrix(Inf, nrow = Kseg, ncol = n)
+  prev <- matrix(NA_integer_, nrow = Kseg, ncol = n)
+
+  for (j in 1:n) dp[1, j] <- sse_seg(1L, j)
+
+  for (k in 2:Kseg) {
+    for (j in k:n) {
+      best <- Inf; arg <- NA_integer_
+      for (t in (k-1):(j-1)) {
+        val <- dp[k-1, t] + sse_seg(t+1L, j)
+        if (val < best) { best <- val; arg <- t }
+      }
+      dp[k, j]   <- best
+      prev[k, j] <- arg
+    }
+  }
+
+  breaks <- integer(K)
+  j <- n
+  for (k in Kseg:2) { t <- prev[k, j]; breaks[k-1] <- t; j <- t }
+  breaks <- sort(breaks)
+
+  k_params <- 2L * Kseg
+  bic <- n * log(dp[Kseg, n] / n) + k_params * log(n)
+
+  list(
+    breaks   = breaks,
+    clusters = cut(seq_len(n), c(0, breaks, n), labels = FALSE),
+    bic      = bic
+  )
+}
+
+
+# ----- tiny plotting helper ---------------------------------------------------
+plot_elbows <- function(f, elbows, xlab = "Index (ranked)", ylab = "Rel. freq") {
+  n <- length(f); x <- seq_len(n)
+  plot(x, f, type = "o", pch = 1, xlab = xlab, ylab = ylab, col=elbows$clusters)
+  abline(v = elbows$breaks + 0.5, lty = 2, col = "gray50")
+}
+
+
+
+```
+
+```{r}
+
+# f should be your relative frequencies, sorted decreasing
+# e.g., f <- sort(mh_lambda_0.10_rel_freqs, decreasing = TRUE)
+f <- sort(mh_lambda_0.10_rel_freqs, decreasing = TRUE)
+el1 <- find_elbows(f, K = 1)   # one elbow → two clusters
+el2 <- find_elbows(f, K = 2)   # two elbows → three clusters
+
+el1$breaks   # index of the elbow
+el2$breaks   # two indices (e.g., c(4, 21))
+
+plot_elbows(f, el2)
+
+```
+
+```{r, fig.width=12, fig.height=7}
+
+el = find_elbows(f, K = 6)
+plot_elbows(f, el)
+
+for (brk in el$breaks){
+  plot(brk + -2:2,
+       mh_lambda_0.10_rel_freqs[brk + -2:2],
+       type='o')
+  abline(v=brk)
+  #axis(side=1, at=(brk + -2:2), las=2)
+}
+
+
+
+```
+
+```{r}
+incl.summary = inclusion_summary(mh_lambda_0.10_samples,
+                  top_k=149)
+```
+
+```{r}
+incl.summary = cbind(incl.summary, el$clusters)
+incl.summary = incl.summary %>% rename("clusters" = "el$clusters" )
+```
+
+#### Relative frequencies clustered
+
+```{r, fig.width=12, fig.height=10}
+plot_inclusion(incl.summary %>% filter(p_hat > 0.5), elbow_clusters=TRUE)
+```
+
+
+```{r, fig.width=7, fig.height=5}}
+# Fix the cluster level order once
+lvl <- sort(unique(incl.summary$clusters))
+pal <- mk_cluster_palette(lvl, base = "Set2")  # or "Set2", "Paired", etc.
+
+#options(repr.plot.width = 12, repr.plot.height =13)
+
+p1 = plot_inclusion_v2(incl.summary %>% dplyr::filter(p_hat > 0.5),
+               color_by = "clusters",
+               cluster_levels = lvl,
+               cluster_palette = pal,
+               title = "Inclusion probabilities > 0.5 (w/ ESS 95% CI)") + theme(aspect.ratio = 1.2) 
+
+
+p2 = plot_inclusion_v2(incl.summary %>% dplyr::filter(p_hat <= 0.5),
+               color_by = "clusters",
+               cluster_levels = lvl,
+               cluster_palette = pal,
+               title = "Inclusion probabilities <= 0.5 (w/ ESS 95% CI)") + theme(aspect.ratio = 1)   
+
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_clustered_ge_0.5.png"),
+       p1, width = 10, height = 9, units = "in", bg='white',
+       scale=1.3 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_clustered_le_0.5.png"),
+       p2, width = 10, height = 9, units = "in", bg='white',
+       scale=1.5 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+
+
+
+```
+
+
+```{r}
+p3 = plot_inclusion_v2(incl.summary %>% dplyr::filter(p_hat <= 0.5 & clusters == 6),
+               color_by = "clusters",
+               cluster_levels = lvl,
+               cluster_palette = pal,
+               title = "Inclusion probabilities <= 0.5 (w/ ESS 95% CI)") + theme(aspect.ratio = 1)   
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_clustered_le_0.5_clust6.png"),
+       p3, width = 10, height = 9, units = "in", bg='white',
+       scale=1.3 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+
+```
+
+
+
+```{r}
+p4 = plot_inclusion_v2(incl.summary %>% dplyr::filter(p_hat <= 0.5 & clusters == 7),
+               color_by = "clusters",
+               cluster_levels = lvl,
+               cluster_palette = pal,
+               title = "Inclusion probabilities <= 0.5 (w/ ESS 95% CI)") + theme(aspect.ratio = 1)   
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_clustered_le_0.5_clust7.png"),
+       p4, width = 10, height = 9, units = "in", bg='white',
+       scale=1.7 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+
+```
+
+### lam=0.75
+
+```{r}
+inclusion_summary_lam_0.75 = inclusion_summary(
+    rbind(mh_lambda_0.75_chain_1$rs$samples,
+          mh_lambda_0.75_chain_2$rs$samples,
+          mh_lambda_0.75_chain_3$rs$samples,
+          mh_lambda_0.75_chain_4$rs$samples),
+                  top_k=149)
+```
+
+
+
+```{r}
+plot_rel_freqs_pooled_lam(0.75, want_asy_ci = FALSE)
+```
+
+```{r}
+plot_rel_freqs_pooled_lam(0.75, want_asy_ci = FALSE, want_errorbar = FALSE)
+```
+
+
+#### Core variables
+
+```{r}
+
+plot_inclusion(
+  inclusion_summary_lam_0.75 %>%
+    filter(variable %in% core_vars_among_elites & p_hat >= 0.5)
+)
+
+
+plot_inclusion(
+  inclusion_summary_lam_0.75 %>%
+    filter(variable %in% core_vars_among_elites & p_hat < 0.5)
+)
+
+
+xtable(
+  inclusion_summary_lam_0.75 %>%
+    filter(variable %in% core_vars_among_elites) %>%
+    select(-is_gt)
+)
+
+```
+
+#### For latex
+```{r}
+xtable(
+  inclusion_summary_lam_0.75 %>%
+    select(variable, p_hat, ess, se, lower, upper, -is_gt)
+)
+```
+
+
+```{r}
+print(
+  (inclusion_summary_lam_0.75 %>%
+         filter(variable %in% core_vars_among_elites) %>%
+         filter(grepl("cloud", variable))
+       ),
+      
+      n=50)
+```
+
+
+
+
+## Rel freqs for core elites
+
+```{r}
+incl.summary.v2 <- incl.summary
+incl.summary.v2$is_core_var = incl.summary.v2$variable %in% core_vars_among_elites
+```
+
+
+
+```{r}
+
+plot_incl_core_elite_gt_0.5 = plot_inclusion_custom_fill(incl.summary.v2 %>% filter(is_core_var == TRUE & p_hat >= 0.5),
+                           #col_fill="is_core_var",
+                            title = "Inclusion probabilities for core elite sets with p >= 0.5 (w/ ESS 95% CI)") 
+
+
+plot_incl_core_elite_le_0.5 = plot_inclusion_custom_fill(incl.summary.v2 %>% filter(is_core_var == TRUE & p_hat < 0.5),
+                           #col_fill="is_core_var",
+                              title = "Inclusion probabilities for core elite sets with p < 0.5 (w/ ESS 95% CI)") 
+
+
+#ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_core_elite_gt_0.5.png"),
+#       plot_incl_core_elite_gt_0.5,
+#       width = 10, height = 9, units = "in", bg='white',
+#       scale=1.7 # Scale all plot elements (text, points, spacing) with the canvas
+#       )
+
+
+#ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "inclusion_core_elite_le_0.5.png"),
+#       plot_incl_core_elite_le_0.5,
+#       width = 10, height = 9, units = "in", bg='white',
+#       scale=1.7 # Scale all plot elements (text, points, spacing) with the canvas
+#       )
+
+
+
+```
+
+#### Vars with 0.5 rel freq NOT in core?
+
+```{r}
+incl.summary.v2 %>% filter(is_core_var == FALSE & p_hat >= 0.5)
+```
+
+```{r}
+
+intersect(
+  (incl.summary.v2 %>% filter(is_core_var == FALSE & p_hat >= 0.5))$variable,
+  varnames_elites[[1]]
+)
+
+```
+
+
+### LaTeX code for thesis
+```{r}
+
+
+rows_to_color <- list(pos = list(which(incl.summary.v2$is_core_var == TRUE)),
+                      command = "\\rowcolor{white}" 
+                      )
+
+
+
+print(
+  xtable(
+    incl.summary.v2 %>%
+      filter(is_core_var == TRUE) %>%
+      select(variable, p_hat, ess)
+    ),
+  type = "latex",
+  #add.to.row = rows_to_color,
+  floating=TRUE
+)
+
+```
+
+
+
+
+## BIC for core vars
+
+```{r}
+
+
+compute.BIC.auto(data.frame(X,y),
+                 colnames(X) %in% (incl.summary.v2 %>% filter(is_core_var == TRUE))$variable)
+
+```
+
+```{r}
+compute.BIC.auto(data.frame(X,y),
+                 colnames(X) %in% (incl.summary.v2 %>% filter(is_core_var == TRUE & p_hat > 0.5))$variable)
+```
+## Importance sampling (0.1 to 0.75)
+```{r}
+# ---- Importance-sampled inclusion probs: lambda_s -> lambda_t ----------------
+# samples_list: list of 0/1 matrices, each (n_draws x p), from lambda_s
+# bic_list    : list of numeric vectors, each length n_draws, BIC per draw
+# lambda_s    : source lambda (e.g., 0.10)
+# lambda_t    : target lambda (e.g., 0.75)
+# burn        : drop this many initial draws in each chain
+# thin        : keep every 'thin'-th draw (optional)
+importance_relfreq <- function(samples_list, bic_list,
+                               lambda_s = 0.10, lambda_t = 0.75,
+                               burn = 0L, thin = 1L) {
+  stopifnot(length(samples_list) == length(bic_list))
+
+  V <- list()
+  bic_all <- list()
+
+  for (k in seq_along(samples_list)) {
+    S <- samples_list[[k]]
+    B <- bic_list[[k]]
+
+    # --- ensure lengths match ---
+    n <- min(nrow(S), length(B))
+    S <- S[seq_len(n), , drop = FALSE]
+    B <- B[seq_len(n)]
+
+    # --- burn & thin ---
+    if (burn > 0) {
+      S <- S[(burn + 1):nrow(S), , drop = FALSE]
+      B <- B[(burn + 1):length(B)]
+    }
+    if (thin > 1) {
+      keep <- seq(1, nrow(S), by = thin)
+      S <- S[keep, , drop = FALSE]
+      B <- B[keep]
+    }
+
+    V[[k]] <- S
+    bic_all[[k]] <- B
+  }
+
+  V <- do.call(rbind, V)
+  bic <- unlist(bic_all)
+  stopifnot(nrow(V) == length(bic))
+
+  # --- compute weights safely ---
+  delta <- (lambda_t - lambda_s)
+  lw <- -delta * bic
+  lw <- lw - max(lw)   # stabilize
+  w <- exp(lw)
+
+  wsum <- sum(w)
+  ess <- (wsum^2) / sum(w^2)
+
+  # --- weighted inclusion probs ---
+  num <- as.numeric(crossprod(w, V))   # safe & efficient
+  phat <- num / wsum
+
+  se <- sqrt(pmax(phat * (1 - phat), 0) / ess)
+  ci_lo <- pmax(0, phat - 1.96 * se)
+  ci_hi <- pmin(1, phat + 1.96 * se)
+
+  data.frame(
+    var = colnames(V),
+    p_hat = phat,
+    se = se,
+    ci_lo = ci_lo,
+    ci_hi = ci_hi,
+    ESS = ess,
+    row.names = NULL
+  )
+}
+
+
+# ---------- Example with your objects -----------------------------------------
+# Each is 40000 x 149 of {0,1} indicators at λ = 0.10:
+S10 <- list(
+  mh_lambda_0.10_chain_1$rs$samples,
+  mh_lambda_0.10_chain_2$rs$samples,
+  mh_lambda_0.10_chain_3$rs$samples,
+  mh_lambda_0.10_chain_4$rs$samples
+)
+
+# Matching BIC vectors per draw (replace with your stored BIC traces):
+B10 <- list(
+  mh_lambda_0.10_chain_1$rs$bic_trace,  # or whatever field stores BIC per iteration
+  mh_lambda_0.10_chain_2$rs$bic_trace,
+  mh_lambda_0.10_chain_3$rs$bic_trace,
+  mh_lambda_0.10_chain_4$rs$bic_trace
+)
+
+is_tab_075 <- importance_relfreq(S10, B10, lambda_s = 0.10, lambda_t = 0.75,
+                                 burn = 2000, thin = 1)
+
+# Sort by importance:
+is_tab_075 <- is_tab_075[order(-is_tab_075$p_hat), ]
+head(is_tab_075)
+
+```
+
+
+```{r}
+#plot_inclusion(is_tab_075)
+
+ggplot(is_tab_075 %>% filter(p_hat < 1), aes(x = reorder(var, p_hat), y = p_hat)) + 
+  geom_col(width = 0.7, alpha = 0.2, color = NA) +
+  coord_flip()
+```
+
+
+
+# Methodologies: IN SUMMARY
+
+*Methodology: method-wise*
+- MH on granular lambda values from 0.05 to 3, each 4 x 40k chains with overdispersed inits (no need to tune lambda, since lower lambda)
+
+
+*Methdology for variable importance: rel freq inference*
+1. For finding BIC minimizers, find the minimizer across ALL chains.
+2. For relative frequency inference, pick largest lambda such that chain has converged based on GR diagnostics (happens to be at lambda=0.1) [justify asymptotic property of rel freqs for variables in true model -- it is lambda agnostic]
+3. Cluster the relative frequencies based on observable kinks (done)
+
+
+
+*Methdology to for DGP reconstruction: best model*
+
+
+1. We have ~38 models s.t. BIC(model) - BIC(best model) <= 2. Call them 'elite' models on-par to the best (invoke large n & $\Delta BIC(v_1,v_2)$ as a large sample approximation of $BF(v_1,v_2)$).
+
+2. Differences in variable sets from the best model (52 vars) and the simplest model (50 vars) below:
+
+```{r}
+
+best_simplest_model_bin = (best_BIC_minimizer_all_lambda$elite %>% filter(k==50))$key 
+best_simplest_model_bin = str_split(best_simplest_model_bin, "")[[1]]
+best_simplest_model_bin = sapply(
+  best_simplest_model_bin, function(x)as.logical(as.numeric(x))
+)
+
+best_simplest_model_varnames = colnames(X)[best_simplest_model_bin]
+
+# variable names that the best and the simplest elite agree with
+cat("\nvariable names that the best and the simplest elite agree with\n")
+best_varnames_best_and_simplest = intersect(
+  best_BIC_minimizer_all_lambda$best$variables,
+  best_simplest_model_varnames
+)
+best_varnames_best_and_simplest
+
+# Vars in the elite simplest model that are not in the best
+cat("\nVars in the elite simplest model that are not in the best\n")
+setdiff(best_simplest_model_varnames, best_varnames_best_and_simplest)
+
+
+# Vars in the best model that are not in the simplest
+cat("\nVars in the best model that are not in the simplest\n")
+setdiff(best_BIC_minimizer_all_lambda$best$variables, best_varnames_best_and_simplest)
+
+```
+We do NOT know which variables are redundant or useless in both models. Which brings us to 3:
+
+3. (Under consideration) consider both models, and validate them in some way (e.g. using AUC-ROC and AUC-PR with 5 fold cross validation -- obtain out of sample predicted probas in each test fold, use them to make the AUC-ROC and AUC-PR)
+
+4. From 3, take whatever model with the highest AUC-ROC (or AUC-PR ?? ) and treat it as the best model for reconstructing the DGP.
+
+5. Finally, perform a weighted ```glm()``` to the chosen model (hope intercept is adjusted), then perform HL test. Once fit is adequate, present the coeffs in the weighted glm as our final model.
+
+
+
+*Alternative methodology for variable importance: rel freq inference ON CORE ELITE SETS.*
+
+1. Among all 38 elite models, find the largest variable set that consistently 
+appears in all 38 elite models (i.e. ```Reduce(intersect, 38 elite models```). Call this
+the core elite sets.
+
+2. Plot their variable importance of core elite sets.
+
+3. Then treat all variables with rel freq >= 0.5 as the one that are 'important' (not necessarily influential in the DGP).
+
+4. Do you still want to perform the knee elbow clustering for the rel freqs??
+
+
+*Defenses for why we consider our results robust* 
+1. Procedure already run on standardized dataset
+2. Outliers (leverage via mahalanobis distance) already considered. Variable sets with or without them are still the same 
+
+# Validate models
+
+
+
+## CV log loss
+
+### best model VS best simplest
+
+```{r}
+# choose between 50- and 52-var elite (and any others with ΔBIC ≤ 2)
+cv_logloss <- function(X, y, vars, K=5, seed=123){
+  set.seed(seed)
+  folds <- sample(rep(1:K, length.out=length(y)))
+  ll <- 0; n <- 0
+  
+  ll_across_folds = c()
+  n_across_folds = c()
+  
+  for(k in 1:K){
+    tr <- folds!=k; te <- !tr
+    fit <- glm(y[tr] ~ ., binomial, data=data.frame(scale(X[tr, vars, drop=FALSE]), y=y[tr]))
+    p   <- predict(fit, newdata=data.frame(scale(X[te, vars, drop=FALSE])), type="response")
+    # clip probs
+    p <- pmin(pmax(p, 1e-12), 1-1e-12)
+    
+    ll_fold = - sum(y[te]*log(p) + (1-y[te])*log(1-p))
+    
+    ll_across_folds = c(ll_across_folds,
+                        ll_fold)
+    n_across_folds = c(n_across_folds, sum(te))
+    
+    ll <- ll + ll_fold
+    n  <- n + sum(te)
+  }
+  
+  return(
+    list(
+      ll_across_folds = ll_across_folds,
+      n_across_folds = n_across_folds,
+      avg_ll = ll/n
+    )
+  )
+}
+
+# then compute PR-AUC secondarily (e.g., PRROC::pr.curve)
+cv_logloss_best_model = cv_logloss(X, y, best_BIC_minimizer_all_lambda$best$variables)
+cv_logloss_best_simplest_model = cv_logloss(X, y, best_simplest_model_varnames)
+
+avg_cv_logloss_best_model = cv_logloss_best_model$avg_ll
+avg_cv_logloss_best_simplest_model = cv_logloss_best_simplest_model$avg_ll
+
+```
+
+
+```{r}
+cat(sprintf("log loss for best model: %.4f\nlog loss for best simplest: %.4f\n",
+            avg_cv_logloss_best_model,
+            avg_cv_logloss_best_simplest_model))
+
+
+```
+
+### CV log loss across all elite models
+
+```{r}
+
+avg_cv_logloss_elite_models = lapply(1:length(varnames_elites),
+                        function(i){
+                          cv_ll = cv_logloss(X, y, varnames_elites[[i]])
+                          cat("Elite ", i, " done!\n")
+                          return(cv_ll)
+                      }
+              )
+
+```
+```{r}
+saveRDS(avg_cv_logloss_elite_models,
+        here("output",
+             "validation_outputs",
+             "avg_cv_logloss_elite_models.rds"))
+
+
+
+avg_cv_logloss_elite_models_df = data.frame(
+  avg_ll = unlist(lapply(avg_cv_logloss_elite_models, function(x) x$avg_ll)),
+  ll_across_folds = unlist(lapply(avg_cv_logloss_elite_models, function(x) x$ll_across_folds)),
+  n_across_folds = unlist(lapply(avg_cv_logloss_elite_models, function(x) x$n_across_folds)),
+)
+
+
+#saveRDS(avg_cv_logloss_elite_models_df,
+#        here("output",
+#             "validation_outputs",
+#             "avg_cv_logloss_elite_models_df.rds"))
+
+```
+
+
+```{r}
+which.min(avg_cv_logloss_elite_models_df$avg_ll)
+```
+
+
+
+## CV AUC-PR
+
+
+### Function: compute AUC-PR
+
+```{r}
+# install.packages("precrec")  # if needed
+library(precrec)
+library(ggplot2)
+
+# y: 0/1 vector (1 = positive), p: predicted probabilities for class 1
+pr_stats <- function(y, p, title = "Precision–Recall") {
+  mm <- evalmod(scores = p, labels = y)       # computes ROC + PR by default
+  au <- auc(mm)                               # data frame of AUCs
+  aupr <- subset(au, curvetypes == "PRC")$aucs
+
+  prev <- mean(y == 1)                        # baseline precision
+  g <- autoplot(mm, "PRC") +
+    labs(title = sprintf("%s (AUC-PR = %.5f)", title, aupr),
+         x = "Recall", y = "Precision") +
+    geom_hline(yintercept = prev, linetype = 2, alpha = .6) +
+    annotate("text", x = .05, y = prev + .02,
+             label = sprintf("Baseline = prevalence = %.5f", prev), hjust = 0)
+
+  list(aupr = as.numeric(aupr), plot = g)
+}
+
+```
+
+### Function: compute avg CV AUC-PR
+
+```{r}
+
+# compute out of sample AUC-PRs across folds using a 
+# pre specified variable set 'vars'
+cv_aucpr <- function(X, y, vars, K=5, seed=123, verbose=FALSE){
+  
+  # 0. fix the fold splitting
+  set.seed(seed)
+  folds <- sample(rep(1:K, length.out=length(y)))
+  
+  aucpr_across_folds = c()
+  
+  for(k in 1:K){
+    
+    # 1. create training fold and held out fold
+    tr <- folds!=k; te <- !tr
+    
+    if (verbose) cat(sprintf("Proportion of 1s in y[tr] = %.2f\n", sum(y[tr])/length(y[tr]) ))
+    
+    # 2. fit on training
+    fit <- glm(y[tr] ~ ., binomial, data=data.frame(scale(X[tr, vars, drop=FALSE]), y=y[tr]))
+    
+    if (verbose) print(summary(fit))
+    
+    # 3. predict on held out 
+    
+        tryCatch(
+        {
+            p   <- predict(fit,
+                           newdata=data.frame(scale(X[te, vars, drop=FALSE])),
+                           type="response")
+            # clip probs
+            p <- pmin(pmax(p, 1e-12), 1-1e-12)
+            
+            
+            # 4. obtain out of sample AUC-PR
+            out <- pr_stats(y[te], p, title="")
+            
+            # 5. record aucpr
+            cat(sprintf("Fold %d done, AUC-PR=%.3f\n", k, out$aupr))
+            aucpr_across_folds = c(aucpr_across_folds, out$aupr)
+            
+            
+        },
+        error = function(cond) {
+          cat(sprintf("Fold %d problematic, see msg below: \n", k))
+          message(conditionMessage(cond))
+          aucpr_across_folds = c(aucpr_across_folds, NA)
+        },
+        
+        finally = invisible() 
+
+    )
+    
+    
+
+  }
+  
+  return(
+    list(
+      aucpr_across_folds = aucpr_across_folds,
+      avg_aucpr = mean(aucpr_across_folds, na.rm=TRUE)
+    )
+  )
+}
+
+# compute AUC PR on training dataset using a var set
+compute_auc_pr = function(var_name){
+  fit <- glm(y ~ .,
+           family = binomial,
+           data = data.frame(X[,var_name],y))
+  p <- predict(fit, type = "response")
+  out <- pr_stats(y, p, title="")
+  out$aupr
+}
+
+
+
+# plot PR curve on training dataset using a var set
+plot_PR = function(var_name, title="AUC-PR: Best Model"){
+  fit <- glm(y ~ .,
+           family = binomial,
+           data = data.frame(X[,var_name],y))
+  p <- predict(fit, type = "response")
+  out <- pr_stats(y, p, title)
+  out$aupr
+  out$plot
+}
+
+
+#plot_grid(
+#  plot_PR(best_BIC_minimizer_all_lambda$best$variables, "AUC-PR: Best Model"),
+#  plot_PR(best_simplest_model_varnames, "AUC-PR: Best Simplest Model")
+#)
+
+
+
+```
+
+### across all elite models
+
+```{r}
+cv_auc_pr_elite_models = lapply(1:length(varnames_elites),
+                        function(i){
+                          cat(sprintf("Begin Elite %d\n", i))
+                          cv_pr = cv_aucpr(X, y, varnames_elites[[i]])
+                          cat("Average AUC-PR for Elite ", i, "=", cv_pr$avg_aucpr, "\n\n")
+                          return(cv_pr)
+                      }
+              )
+```
+
+
+```{r}
+cv_auc_pr_elite_models_avgAucPr = sapply(1:length(cv_auc_pr_elite_models),
+       function(i) cv_auc_pr_elite_models[[i]]$avg_aucpr)
+
+which.max(cv_auc_pr_elite_models_avgAucPr)
+
+#varnames_elites[[which.max(cv_auc_pr_elite_models_avgAucPr)]]
+
+
+
+```
+
+
+
+## Finding the best model by validation
+
+```{r}
+which.min(avg_cv_logloss_elite_models_df$avg_ll)
+```
+
+
+
+```{r}
+
+auc_prs = c()
+avg_lls = c()
+
+for(i in 1:length(auc_pr_elite_models)){
+  auc_prs = c(auc_prs, cv_auc_pr_elite_models_avgAucPr[i])
+  avg_lls = c(avg_lls, avg_cv_logloss_elite_models[[i]]$avg_ll)
+}
+
+
+elite_vals_df = data.frame(auc_pr = auc_prs,
+                           avg_ll = avg_lls,
+                           elite_idx = 1:length(auc_pr_elite_models))
+
+```
+
+
+### latex: min avgll and max aucpr
+
+```{r}
+xtable(
+  elite_vals_df %>% arrange(avg_ll, desc(auc_pr)),
+  digits = c(0,4,4,0)
+  
+)
+```
+
+
+
+```{r}
+elite_vals_df %>% arrange(avg_ll)
+```
+
+```{r}
+varnames_elites[[25]]
+```
+
+## Elite model 25 is the winner!
+
+```{r}
+varnames_elites[[25]]
+```
+
+
+## Best elite model
+
+```{r}
+
+best_elite_model = glm(y ~ .,
+    data=data.frame(scale(X)[,varnames_elites[[25]]], y),
+    family=binomial
+    )
+
+
+summary(best_elite_model)
+
+
+```
+
+```{r}
+
+setdiff(varnames_elites[[25]],
+        core_vars_among_elites)
+
+
+```
+wind_u no prob
+potential_vorticity no prob
+mean_sea_level_pressure
+surface_dew
+
+
+### Summarize in latex
+```{r}
+library(broom)
+
+# Extract tidy coefficients
+coef_tbl <- broom::tidy(best_elite_model) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    coef_formatted = sprintf("%.2f (%.2f)", estimate, std.error)
+  ) %>%
+  arrange(desc(abs(estimate))) %>%
+  select(variable = term, coefficient = coef_formatted)
+
+
+xtable(coef_tbl)
+
+# Display neatly
+knitr::kable(coef_tbl,
+             caption = "Final elite model: Coefficients (Estimate with SE in parentheses)",
+             align = c("l", "r"))
+
+```
+
+
+## Correlation ~ OOS performance
+
+### Examine correlations in best elite model
+
+```{r}
+melt(round(cor(X[,varnames_elites[[25]]]), 2)) %>%
+  filter(value != 1) %>%
+  arrange(desc(value)) %>% filter(Var1 == "geopotential_at_925_hPa")
+
+```
+
+### reduction in cv log loss
+
+#### For vertical_wind_shear_between_300_hPa_and_1000_hPa
+
+```{r}
+for (shear_var in grep("vertical_wind_shear", varnames_elites[[25]], value=TRUE)){
+  
+  best_elite_set_no_shear_var = varnames_elites[[25]][! varnames_elites[[25]] %in%
+                                      c(shear_var)]
+  
+  cv_log_loss_anomaly_shear = cv_logloss(X, y,
+             best_elite_set_no_shear_var
+  ) 
+  
+  cat(sprintf("OOS log-loss after removing %s: %.3f, with BIC reduction: %.3f \n",
+              shear_var,
+              cv_log_loss_anomaly_shear$avg_ll - min(avg_lls),
+              compute.BIC.auto(data.frame(X,y), 
+                 colnames(X) %in% best_elite_set_no_shear_var) - best_BIC_minimizer_all_lambda$best$BIC))
+  
+  
+  
+}
+```
+
+
+
+```{r}
+cv_log_loss_anomaly_shear = cv_logloss(X, y,
+           varnames_elites[[25]][! varnames_elites[[25]] %in% c("vertical_wind_shear_between_300_hPa_and_1000_hPa")]
+) 
+```
+
+
+
+```{r}
+cv_log_loss_anomaly_shear$avg_ll - min(avg_lls)
+```
+
+```{r}
+cv_aucpr_anomaly_shear = cv_aucpr(X, y,
+           varnames_elites[[25]][! varnames_elites[[25]] %in% c("vertical_wind_shear_between_300_hPa_and_1000_hPa")]
+) 
+```
+
+```{r}
+cv_aucpr_anomaly_shear$avg_aucpr - max(auc_prs, na.rm=TRUE)
+```
+
+
+```{r}
+compute.BIC.auto(data.frame(X,y), 
+                 colnames(X) %in% varnames_elites[[25]][! varnames_elites[[25]] %in% c("vertical_wind_shear_between_300_hPa_and_1000_hPa")]) - best_BIC_minimizer_all_lambda$best$BIC
+```
+
+```{r}
+compute.BIC.auto(data.frame(X,y), 
+                 colnames(X) %in% varnames_elites[[1]][! varnames_elites[[1]] %in% c("vertical_wind_shear_between_300_hPa_and_1000_hPa")]) - best_BIC_minimizer_all_lambda$best$BIC
+```
+
+
+
+#### geopotential_at_925_hPa and mean_sea_level_pressure
+
+```{r}
+
+cv_logloss(X, y,
+           varnames_elites[[25]][! varnames_elites[[25]] %in% c("geopotential_at_925_hPa")]
+) 
+
+
+cv_logloss(X, y,
+           varnames_elites[[25]][! varnames_elites[[25]] %in% c("mean_sea_level_pressure")]
+)
+
+```
+
+### Reduction in BIC
+
+```{r}
+
+compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]][! varnames_elites[[25]] %in%
+                                                    c("geopotential_at_925_hPa")]
+) - best_BIC_minimizer_all_lambda$best$BIC
+
+
+compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]][! varnames_elites[[25]] %in%
+                                                    c("geopotential_at_925_hPa")]
+) - compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]]
+)
+
+```
+
+```{r}
+
+compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]][! varnames_elites[[25]] %in%
+                                                    c("mean_sea_level_pressure")]
+) - best_BIC_minimizer_all_lambda$best$BIC
+
+
+compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]][! varnames_elites[[25]] %in%
+                                                    c("mean_sea_level_pressure")]
+) - compute.BIC.auto(data.frame(X,y),
+           colnames(X) %in% varnames_elites[[25]]
+)
+
+```
+
+
+```{r}
+head(
+  elite_vals_df %>% arrange(avg_ll),
+  n=1
+)
+
+head(
+  elite_vals_df %>% arrange(desc(auc_pr)),
+  n=1
+)
+
+```
+
+
+
+## Validate with LASSO
+
+Ensure that both RS and LASSO, in the cross validation, uses the same folds
+
+```{r}
+make_folds <- function(y, k = 5, seed = 123) {
+  set.seed(seed)
+  # caret returns a list of indices per fold; we’ll convert to a foldid vector
+  idx_list <- createFolds(y, k = k, list = TRUE, returnTrain = FALSE)
+  foldid <- integer(length(y))
+  for (i in seq_along(idx_list)) foldid[idx_list[[i]]] <- i
+  foldid
+}
+
+binom_deviance_per_obs <- function(y_true, p_hat, eps = 1e-15) {
+  p_hat <- pmin(pmax(p_hat, eps), 1 - eps)
+  # deviance = -2 * sum(y log p + (1-y) log (1-p))
+  -2 * mean(y_true * log(p_hat) + (1 - y_true) * log(1 - p_hat))
+}
+
+
+cv_deviance_rs <- function(X, y, vars, foldid) {
+  k <- max(foldid)
+  scores <- numeric(k)
+  for (f in 1:k) {
+    test_idx  <- which(foldid == f)
+    train_idx <- setdiff(seq_along(y), test_idx)
+
+    df_tr <- data.frame(scale(X)[train_idx, vars, drop=FALSE], y = y[train_idx])
+    df_te <- data.frame(scale(X)[test_idx,  vars, drop=FALSE], y = y[test_idx])
+
+    fit <- glm(y ~ ., data = df_tr, family = binomial)
+    p_hat <- predict(fit, newdata = df_te, type = "response")
+    scores[f] <- binom_deviance_per_obs(df_te$y, p_hat)
+  }
+  list(mean = mean(scores), sd = sd(scores), per_fold = scores, num_vars=length(vars))
+}
+
+## 4) CV for LASSO on the same folds (uses *all* predictors by design)
+cv_deviance_lasso <- function(X, y, foldid) {
+  # glmnet expects matrix X and vector y; foldid aligns with rows of X
+  fit_cv <- cv.glmnet(
+    x = as.matrix(X), y = y,
+    family = "binomial",
+    type.measure = "deviance",
+    foldid = foldid,
+    keep = TRUE # keep per-fold predictions if you want to inspect later
+  )
+  # glmnet's cvm is mean deviance per observation
+  list(mean = as.numeric(min(fit_cv$cvm)),
+       sd   = as.numeric(fit_cv$cvsd[which.min(fit_cv$cvm)]),
+       model = fit_cv)
+}
+
+```
+
+
+```{r}
+
+# 1) folds
+foldid <- make_folds(y, k = 5, seed = 123)
+
+# 2) RS model CV deviance
+rs_out <- cv_deviance_rs(X, y, vars = varnames_elites[[25]], foldid = foldid)
+
+# 3) LASSO CV deviance (on all X)
+lasso_out <- cv_deviance_lasso(X, y, foldid = foldid)
+
+
+```
+
+```{r}
+cat(sprintf("RS (fixed vars) CV deviance:   mean=%.4f (sd=%.4f)\n", rs_out$mean, rs_out$sd))
+cat(sprintf("LASSO (glmnet) CV deviance:    mean=%.4f (sd=%.4f)\n", lasso_out$mean, lasso_out$sd))
+```
+
+
+
+```{r}
+plot_OOS_deviances = function(rs_out, lasso_out, foldid){
+  # Results
+  desc_rs = sprintf("RS (fixed var set),\nWith %d Variables\non full model", rs_out$num_vars)
+  desc_lasso = sprintf("LASSO (best lambda=%.4f),\nWith 81 Variables\non full model",
+                       lasso_out$model$lambda.1se)
+  
+  methods <- c(desc_rs, desc_lasso)
+  means   <- c(rs_out$mean, lasso_out$mean)
+  sds     <- c(rs_out$sd, lasso_out$sd)
+  nfold   <- length(unique(foldid))
+  df      <- nfold - 1
+  
+  # Critical t value for 95% CI
+  tval <- qt(0.975, df)
+  
+  # Compute CI half-widths
+  errors <- tval * sds / sqrt(nfold)
+  
+  # Put into a data.frame for plotting
+  df_plot <- data.frame(
+    method = methods,
+    mean   = means,
+    lower  = means - errors,
+    upper  = means + errors
+  )
+  
+  df_plot$mean = round(df_plot$mean, 3)
+  
+  #vars <- c("50 variables\npicked", "81 variables\npicked")  # text annotations
+  #df_plot$vars <- vars
+  
+  
+  
+  
+  ###
+  
+  palette <- c(desc_lasso = "#2563EB",  # blue
+               desc_rs = "#DC2626") # red
+  
+  ggplot(df_plot, aes(x = method, y = mean)) +
+    
+    # bars (colored)
+    geom_col(aes(fill = method), width = 0.5, alpha = 0.35, color='grey') +
+    
+    # error bars (always black)
+    geom_errorbar(aes(ymin = lower, ymax = upper), 
+                  width = 0.12, linewidth = 1, color = "black") +
+    
+    # points (colored)
+    geom_point(aes(color = method), size = 2.5) +
+    
+    # mean labels (colored)
+    geom_text(aes(label = mean, color = method), 
+              vjust = 0.7, hjust = -0.5, size = 4.5, fontface = "bold") +
+    
+    # manual colors
+    scale_fill_manual(values = palette, guide = "none") +
+    scale_color_manual(values = palette, guide = "none") +
+    
+    labs(
+      title = "Comparison of RS vs LASSO",
+      y = "CV Deviance (mean ± 95% CI)", x = NULL
+    ) +
+    
+    coord_cartesian(ylim = c(0, max(df_plot$upper) + 0.05)) +
+    
+    theme_minimal(base_size = 14) +
+    theme(
+      panel.grid.major.x = element_blank(),
+      axis.text.x = element_text(margin = margin(t = 6))
+    ) 
+}
+
+
+```
+
+
+```{r}
+plot_OOS_deviances(rs_out, lasso_out, foldid)
+```
+
+## Validate core vars?
+```{r}
+cv_logloss(X, y, vars=core_vars_among_elites)
+```
+
+```{r}
+cv_aucpr(X, y, vars=core_vars_among_elites)
+```
+
+
+
+# Coef distributions of core elites across elite models
+```{r}
+length(varnames_elites)
+
+varnames_elites[[1]]
+```
+
+
+
+```{r}
+core_vars_among_elites
+```
+## Obtain elite coefs
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+
+# Suppose you have:
+# - varnames_elites: list of length = number of elite models
+#   (each entry is a character vector of variable names in that elite model)
+# - X: your predictor matrix (already standardized)
+# - y: response vector
+
+# -----------------------
+# 1. Fit glm to each elite model
+# -----------------------
+elite_coefs <- lapply(seq_along(varnames_elites), function(i) {
+  vars <- varnames_elites[[i]]
+  
+  df <- data.frame(y = y, scale(X)[, vars, drop = FALSE])
+  fit <- glm(y ~ ., family = binomial, data = df)
+  
+  broom::tidy(fit) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(model_id = i)
+})
+
+elite_coefs_df <- bind_rows(elite_coefs)
+
+# -----------------------
+# 2. Filter to only core vars
+# -----------------------
+core_coefs_df <- elite_coefs_df %>%
+  filter(term %in% core_vars_among_elites)
+
+# -----------------------
+# 3. Visualization (see below)
+# -----------------------
+
+```
+## Boxplots
+```{r}
+ggplot(core_coefs_df %>% filter(estimate >= 0),
+       aes(x = reorder(term, estimate, FUN=var, decreasing=TRUE), y = estimate)) +
+  geom_boxplot(outlier.alpha = 0.3, fill='red') +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Coefficient variability across elite models (core vars)",
+       x = "Variable", y = "Coefficient estimate")
+
+ggplot(core_coefs_df %>% filter(estimate < 0),
+       aes(x = reorder(term,estimate, FUN=var, decreasing=TRUE), y = estimate)) +
+  geom_boxplot(outlier.alpha = 0.3, fill='red') +
+  theme_minimal() +
+  coord_flip() +
+  labs(title = "Coefficient variability across elite models (core vars)",
+       x = "Variable", y = "Coefficient estimate")
+```
+## Density plot with uncertainty
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# Optional: unimodality score in uncertainty
+if (!requireNamespace("diptest", quietly = TRUE)) install.packages("diptest")
+
+# ----------------------------- stats + sign class -----------------------------
+# core_coefs_df: columns term, estimate
+term_span <- core_coefs_df %>%
+  group_by(term) %>%
+  summarise(min_est = min(estimate, na.rm=TRUE),
+            max_est = max(estimate, na.rm=TRUE),
+            .groups="drop") %>%
+  mutate(sign_group = dplyr::case_when(
+    min_est >  0 ~ "positive-only",
+    max_est <  0 ~ "negative-only",
+    TRUE         ~ "mixed"
+  ))
+
+term_stats <- core_coefs_df %>%
+  group_by(term) %>%
+  summarise(
+    n     = n(),
+    mean  = mean(estimate, na.rm=TRUE),
+    sd    = sd(estimate, na.rm=TRUE),
+    iqr   = IQR(estimate, na.rm=TRUE),
+    mad   = mad(estimate, constant = 1, na.rm=TRUE),
+    dip_p = tryCatch(diptest::dip.test(estimate)$p.value, error = function(e) NA_real_),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    spread_score = scales::rescale(iqr, to = c(0, 1), from = range(iqr, na.rm=TRUE)),
+    mode_score   = 1 - pmin(pmax(dip_p, 0), 1),         # low p = more multi-modal
+    uncertainty  = 0.7*spread_score + 0.3*mode_score    # tweak weights if desired
+  )
+
+coef_df <- core_coefs_df %>%
+  left_join(term_span,  by="term") %>%
+  left_join(term_stats, by="term")
+
+
+#
+
+```
+
+
+```{r}
+plot_coef_dens <- function(df, title, show_zero = FALSE, ncol = 4, var_text_size=7){
+  if (!nrow(df)) return(NULL)
+  ggplot(df, aes(x = estimate, group = term, color = uncertainty, fill = uncertainty)) +
+    geom_density(alpha = 0.22, linewidth = 0.6) +
+    facet_wrap(~ reorder(term, uncertainty), 
+               scales = "free", ncol = ncol, 
+               labeller = labeller(term = label_wrap_gen(width = 20))) +
+    scale_color_gradient(low = "#00A676", high = "#D7263D") +
+    scale_fill_gradient( low = "#00A676", high = "#D7263D") +
+    { if (show_zero) geom_vline(xintercept = 0, linetype = 2, color = "grey55") } +
+    theme_minimal(base_size = 12) +
+    theme(
+      panel.grid      = element_blank(),
+      #legend.position = "none",
+      axis.title      = element_blank(),
+      axis.text.y     = element_blank(),
+      axis.ticks      = element_blank(),
+      strip.text      = element_text(size = var_text_size),            # smaller strip titles
+      panel.spacing   = unit(0.3, "lines"),                # tighter grid
+      plot.title      = element_text(size=14, face="bold"),
+      plot.subtitle   = element_text(size=10)
+    ) +
+    labs(
+      title    = title,
+      subtitle = "Color encodes uncertainty = 0.7*scaled IQR + 0.3*(1 - dip-test p-value)"
+    ) + theme(axis.text.x = element_text(angle = 60, hjust = 1)) # Adjust angle and justification
+}
+
+
+# ----------------------------- three panels -----------------------------------
+p_pos  <- coef_df %>% filter(sign_group == "positive-only") %>%
+  plot_coef_dens("Coefficient distributions across elite models (β > 0)")
+
+p_neg  <- coef_df %>% filter(sign_group == "negative-only") %>%
+  plot_coef_dens("Coefficient distributions across elite models (β < 0)")
+
+p_mix  <- coef_df %>% filter(sign_group == "mixed") %>%
+  plot_coef_dens("Coefficient distributions across elite models (mixed: crosses zero)", show_zero = TRUE, var_text_size=10)
+
+# print whatever exists
+p_pos; p_neg; p_mix
+
+# optional: save
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "coef_pos.png"),
+       p_pos, width=12, height=8, dpi=300, bg = 'white')
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "coef_neg.png"),
+       p_neg, width=12, height=8, dpi=300, bg = 'white')
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots", "coef_mix.png"), 
+       p_mix, width=12, height=8, dpi=300, bg = 'white')
+```
+
+
+# Presenting final model
+## Weighted LR and HL Test
+```{r}
+
+weighted_lr_and_HL_test <- function(vars, weight = TRUE, want_p_adj = FALSE, g = 10) {
+  stopifnot(exists("X"), exists("y"))  # expect X, y in env
+  
+  library(ResourceSelection)
+  library(dplyr)
+  
+  # 1) data for chosen subset
+  df <- data.frame(X[, vars, drop = FALSE], y = y)
+  
+  # 2) class weights (minority gets larger weight)
+  if (weight) {
+    wts <- ifelse(df$y == 1, sum(df$y == 0) / sum(df$y == 1), 1)
+    fit <- glm(y ~ ., data = df, family = binomial, weights = wts)
+  } else {
+    fit <- glm(y ~ ., data = df, family = binomial)
+  }
+  #print(summary(fit))
+  
+  # fitted probs from the (possibly weighted) fit
+  p_hat <- as.numeric(predict(fit, type = "response"))
+  
+  # 3) optional intercept adjustment (recalibration)
+  if (want_p_adj) {
+    # linear predictor from the fitted model
+    linpred <- as.numeric(predict(fit, type = "link"))
+    
+    # re-estimate only the intercept via an offset model
+    # (use *unweighted* here to calibrate to the empirical prevalence)
+    adj_fit <- glm(y ~ offset(linpred), data = df, family = binomial)
+    
+    # swap the intercept by NAME
+    beta_adj <- coef(fit)
+    beta_adj[1] <- coef(adj_fit)[1]
+    
+    # recompute eta using the *same* design matrix as the original fit
+    MM <- model.matrix(fit)
+    #eta_adj <- drop(MM %*% beta_adj)
+    eta_adj <- MM %*% beta_adj
+    print(eta_adj)
+    p_hat   <- plogis(eta_adj)                 # = 1 / (1 + exp(-eta_adj))
+    
+    #print(p_hat)
+  }
+  
+  # 4) numerical clipping for safety
+  eps   <- 1e-15
+  p_hat <- pmin(pmax(p_hat, eps), 1 - eps)
+  
+  # 5) HL test (note: with very large n, HL often rejects even well-behaved models)
+  hl <- hoslem.test(df$y, p_hat, g = g)
+  print(hl)
+  
+  list(
+    fit     = fit,
+    p_hat   = p_hat,
+    hl      = hl,
+    coef    = coef(fit),
+    coef_adj= if (want_p_adj) beta_adj else NULL
+  )
+}
+
+prior_corrected_logit <- function(vars, tau, weight = TRUE) {
+  library(ResourceSelection)
+
+  df <- data.frame(X[, vars, drop = FALSE], y = y)
+  ybar <- mean(df$y)
+
+  # Fit logistic model
+  if (weight) {
+    wts <- ifelse(df$y == 1, sum(df$y == 0)/sum(df$y == 1), 1)
+    fit <- glm(y ~ ., data = df, family = binomial, weights = wts)
+  } else {
+    fit <- glm(y ~ ., data = df, family = binomial)
+  }
+
+  beta_hat <- coef(fit)
+  beta0_hat <- beta_hat[1]
+
+  # Apply King & Zeng prior correction to intercept
+  beta0_corr <- beta0_hat - log(((1 - tau) / tau) * (ybar / (1 - ybar)))
+  beta_corr  <- beta_hat
+  beta_corr[1] <- beta0_corr
+
+  # Recompute predicted probabilities
+  eta_corr <- as.matrix(cbind(1, df[, vars])) %*% beta_corr
+  p_hat_corr <- plogis(eta_corr)
+
+  # Hosmer–Lemeshow test
+  hl <- hoslem.test(df$y, p_hat_corr)
+
+  list(
+    fit = fit,
+    beta_hat = beta_hat,
+    beta_corr = beta_corr,
+    intercept_shift = beta0_corr - beta0_hat,
+    hl = hl,
+    p_hat_corr = p_hat_corr
+  )
+}
+
+
+```
+
+```{r}
+final_model_prior_corrected = prior_corrected_logit(varnames_elites[[25]],
+                                                    0.089,
+                                                    weight=FALSE)
+
+final_model_prior_corrected$hl
+```
+
+
+## Calibration plot
+
+```{r}
+final_model = weighted_lr_and_HL_test(varnames_elites[[25]],
+                                      want_p_adj = FALSE,
+                                      weight=FALSE,
+                                      g=3)
+```
+
+```{r}
+
+
+
+calib_df = data.frame(predict.glm(final_model$fit, type = 'response'), y)
+calib_df = calib_df %>% rename(all_of(c(pred = colnames(calib_df)[1])))
+
+
+calib_plot = calibration_plot(data = calib_df,
+                 obs = "y", pred = "pred",
+                 title = "Calibration plot for the best model",
+                 y_lim = c(0, 0.6), x_lim=c(0, 0.6),
+                 data_summary = TRUE,
+                 nTiles=10)
+calib_plot$calibration_plot +
+  geom_point(color = "blue", size=6, alpha=0.3) + 
+  theme(text = element_text(size = 23))
+```
+```{r}
+calib_plot$data_summary
+```
+
+```{r}
+xtable(calib_plot$data_summary,
+       digits = c(0, 0, 6, 6, 0, 6, 6, 6))
+```
+
+
+
+```{r}
+
+calib_plot_from_model = function(fit, nTiles=10){
+  calib_df = data.frame(predict.glm(fit, type = 'response'), y)
+  calib_df = calib_df %>% rename(all_of(c(pred = colnames(calib_df)[1])))
+  
+  
+  calib_plot = calibration_plot(data = calib_df,
+                   obs = "y", pred = "pred",
+                   title = "Calibration plot",
+                   y_lim = c(0, 1), x_lim=c(0, 1),
+                   data_summary = TRUE,
+                   nTiles=nTiles)
+  
+  calib_plot$calibration_plot + geom_point(color = "blue")
+  
+}
+
+```
+
+
+
+# Reassessing convergence
+
+## Rationale
+
+## lam=0.75
+
+
+### BIC boxplot grouped by chain id
+```{r}
+
+distribution_bic_traces = function(){
+  
+  K = length(mh_lambda_0.10_chain_1$rs$bic_trace)
+  
+  bic_traces_lam_0.1 = c(
+    mh_lambda_0.10_chain_1$rs$bic_trace,
+    mh_lambda_0.10_chain_2$rs$bic_trace,
+    mh_lambda_0.10_chain_3$rs$bic_trace,
+    mh_lambda_0.10_chain_4$rs$bic_trace
+  )
+  chain_desc = c("1: full", "2: empty", "3: sparse", "4: random")
+  
+  bic_traces_lam_0.1_ggplot = data.frame(
+    bic_traces = bic_traces_lam_0.1,
+    chain_id = factor(rep(chain_desc, each=K), levels=chain_desc),
+    iteration = rep(1:K, times=4)
+  )
+  
+  bic_traces_lam_0.75 = c(
+    mh_lambda_0.75_chain_1$rs$bic_trace,
+    mh_lambda_0.75_chain_2$rs$bic_trace,
+    mh_lambda_0.75_chain_3$rs$bic_trace,
+    mh_lambda_0.75_chain_4$rs$bic_trace
+  )
+  
+  bic_traces_lam_0.75_ggplot = data.frame(
+    bic_traces = bic_traces_lam_0.75,
+    chain_id = factor(rep(chain_desc, each=K), levels=chain_desc),
+    iteration = rep(1:K, times=4)
+  )
+  p_0.1 = ggplot(bic_traces_lam_0.1_ggplot, aes(x = bic_traces, y=chain_id)) +
+    geom_boxplot(position = position_dodge(width = 0.8)) +
+    labs(title = "Distribution of BIC traces by chain for lam=0.1", x = "BIC", y = "Chain id") +
+    theme_minimal() +
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank())
+  
+  p_0.75 = ggplot(bic_traces_lam_0.75_ggplot, aes(x = bic_traces, y=chain_id)) +
+    geom_boxplot(position = position_dodge(width = 0.8)) +
+    labs(title = "Distribution of BIC traces by chain for lam=0.75", x = "BIC", y = "Chain id") +
+    theme_minimal() +
+    theme(panel.grid.major.x = element_blank(),
+          panel.grid.minor.x = element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.minor.y = element_blank()) +
+    geom_vline(xintercept = 9590,
+              color = "red", linetype = "dashed")
+  
+  list(p_0.1 = p_0.1,
+       p_0.75 = p_0.75,
+       bic_traces_lam_0.75_ggplot = bic_traces_lam_0.75_ggplot,
+       bic_traces_lam_0.1_ggplot = bic_traces_lam_0.1_ggplot)
+  
+}
+distribution_bic_traces = distribution_bic_traces()
+distribution_bic_traces$p_0.1
+distribution_bic_traces$p_0.75
+
+```
+
+
+### ANOVA: BIC ~ chain_id
+```{r}
+
+df = distribution_bic_traces$bic_traces_lam_0.75_ggplot
+
+df = df[df$bic_traces < 10700,]
+
+anova(
+  lm(bic_traces ~ iteration + chain_id,
+     data = df)
+)
+
+anova(
+  lm(bic_traces ~ chain_id,
+     data = df)
+)
+
+```
+
+
+### Normalized R hat 
+
+```{r}
+library(posterior)
+BIC_by_chain <- split(df$bic_traces, df$chain_id)
+# build draws_array: iterations x chains x 1
+K   <- min(sapply(BIC_by_chain, length))
+arr <- array(unlist(lapply(BIC_by_chain, \(z) z[1:K])), dim=c(K, length(BIC_by_chain), 1))
+draws <- as_draws_array(arr)
+rhat  <- rhat(draws)     # rank-normalized R-hat
+rhat
+
+```
+```{r}
+rhat_basic(draws)
+```
+
+
+## Normalized R hat for all lambda
+
+```{r}
+list.files(here("output", "mh_runs_4_lambda_run_2" ))
+```
+
+
+```{r}
+library(here)
+library(posterior)
+
+
+files <- list.files(
+  here("output", "mh_runs_4_lambda_run_2"),
+  pattern = "^mh_lambda_[0-9\\.]+_chain_[1-4]_", full.names = TRUE
+)
+
+lambdas <- sort(unique(as.numeric(sub(".*mh_lambda_([0-9\\.]+)_chain_.*", "\\1",
+                                      basename(files)))))
+
+rhat_by_lambda <- numeric(length(lambdas))
+
+for (i in seq_along(lambdas)) {
+  lam <- lambdas[i]
+  s = sprintf("mh_lambda_%.2f_chain_", lam)
+  chain_files <- grep(paste0(s), files, value = TRUE)
+
+  if (length(chain_files) != 4) {
+    stop(sprintf("λ=%s: expected 4 chain files, found %d", lam, length(chain_files)))
+  }
+
+  # Read BIC traces; coerce to numeric and validate
+  bic_traces <- lapply(chain_files, function(f) {
+    obj <- readRDS(f)
+    bt  <- obj$rs$bic_trace
+    if (is.null(bt)) stop(sprintf("No $rs$bic_trace in file: %s", f))
+    as.numeric(bt)
+  })
+
+  # lengths as a numeric vector (vapply is strict)
+  lens <- vapply(bic_traces, length, integer(1))
+  K    <- min(lens, na.rm = TRUE)
+
+  # build iterations x chains matrix
+  bic_mat <- do.call(cbind, lapply(bic_traces, `[`, seq_len(K)))
+
+  # to draws_array and R-hat (rank-normalized)
+  arr   <- array(bic_mat, dim = c(K, ncol(bic_mat), 1))
+  draws <- as_draws_array(arr)
+  rhat_by_lambda[i] <- rhat(draws)
+}
+
+rhat_df = data.frame(lambda = lambdas, rhat = rhat_by_lambda)
+
+print(rhat_df)
+
+# Optional: visualize
+library(ggplot2)
+ggplot(rhat_df, aes(x = lambda, y = rhat)) +
+  geom_point(size = 3) + geom_line() +
+  #geom_hline(yintercept = 1.01, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = 1.01, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Rank-normalized R-hat by λ",
+       y = "R-hat (rank-normalized)", x = expression(lambda))
+
+```
+
+```{r}
+
+S_list_MH = list()
+i=1
+
+S_list_MH[[i]] = mh_lambda_0.75_chain_1$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_2$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_3$rs$bic_trace; i = i + 1
+S_list_MH[[i]] = mh_lambda_0.75_chain_4$rs$bic_trace; i = i + 1
+
+best_bic = best_BIC_minimizer_all_lambda$best$BIC
+
+lapply(1:4,
+       function(j){
+         which( S_list_MH[[j]] - best_bic <= 2 )
+       })
+
+```
+
+
+```{r}
+
+vi_trace_plot = function(bottom_ess=1){
+  
+  inclusion_order_by_ess = inclusion_summary_lam_0.75 %>%
+                                  filter(ess > 0) %>%
+                                  arrange(ess)
+  
+  c = inclusion_order_by_ess$ess[bottom_ess]
+  
+  
+  plot(mh_lambda_0.75_chain_1$rs$samples[,c],
+     type='l', col=1)
+  
+  lines(mh_lambda_0.75_chain_2$rs$samples[,c],
+       col=2)
+  lines(mh_lambda_0.75_chain_3$rs$samples[,c],
+       col=3)
+  lines(mh_lambda_0.75_chain_4$rs$samples[,c],
+       col=4)
+}
+
+
+
+inclusion_summary_lam_0.75 %>% filter(ess > 0) %>% arrange(ess)
+```
+
+```{r}
+
+vi_trace_plot = function(bottom_ess=1){
+  
+  inclusion_order_by_ess = inclusion_summary_lam_0.75 %>%
+                                  filter(ess > 0) %>%
+                                  arrange(ess)
+  
+  c = inclusion_order_by_ess$variable[bottom_ess]
+  bottom_ess_value = inclusion_order_by_ess$ess[bottom_ess]
+  
+  par(mfrow=c(2,2))
+  
+  xlab="Iteration"
+  
+  plot(mh_lambda_0.75_chain_1$rs$samples[,c],
+     type='o', col=1, ylim=c(0,1), xlab=xlab,
+     main=sprintf("Indicators on chain 1 (full) for %s\nhaving pooled ESS=%.2f (%d-th lowest pooled ESS)", c, bottom_ess_value, bottom_ess),
+     ylab="Chain 1")
+  
+  plot(mh_lambda_0.75_chain_2$rs$samples[,c],
+       col=1, type='o', ylim=c(0,1), xlab=xlab,
+       main=sprintf("Indicators on chain 2 (empty) for %s\nhaving pooled ESS=%.2f (%d-th lowest pooled ESS)", c, bottom_ess_value, bottom_ess),
+       ylab="Chain 2")
+  
+  plot(mh_lambda_0.75_chain_3$rs$samples[,c],
+       col=1, type='o', ylim=c(0,1), xlab=xlab,
+       main=sprintf("Indicators on chain 3 (sparse) for %s\nhaving pooled ESS=%.2f (%d-th lowest pooled ESS)", c, bottom_ess_value, bottom_ess),
+       ylab="Chain 3")
+  
+  plot(mh_lambda_0.75_chain_4$rs$samples[,c],
+       col=1, type='o', ylim=c(0,1), xlab=xlab,
+       main=sprintf("Indicators on chain 4 (random) for %s\nhaving pooled ESS=%.2f (%d-th lowest pooled ESS)", c, bottom_ess_value, bottom_ess),
+       ylab="Chain 4")
+}
+
+vi_trace_plot()
+
+```
+
+
+```{r}
+inclusion_summary_lam_0.75_asy_CI = inclusion_summary_asy_CI(
+    rbind(mh_lambda_0.75_chain_1$rs$samples,
+          mh_lambda_0.75_chain_2$rs$samples,
+          mh_lambda_0.75_chain_3$rs$samples,
+          mh_lambda_0.75_chain_4$rs$samples),
+                  top_k=149,
+    epsilon=1e-20,
+    alpha=0.1)
+
+plot_inclusion(inclusion_summary_lam_0.75_asy_CI)
+```
+
+
+```{r}
+incl.summary.v2$variable
+```
+
+
+
+# Attempted empirical rule for choosing lambda.
+
+
+```{r}
+
+bic_max_min_diff = function(K=1000, bic_burnin=1000,
+                            chain_id=3, max_min_diff=FALSE){
+  
+  
+  ### note burn-in has not been applied to BIC traces 
+
+  # extract all RS results
+  pattern = sprintf("^mh_lambda_[0-9\\.]+_chain_%d_",chain_id)
+  files <- list.files(
+    here("output", "mh_runs_4_lambda_run_2"),
+    pattern = pattern, full.names = TRUE
+  )
+  
+  # extract lambda values
+  lambdas <- na.omit(str_extract(list.files(here("output", "mh_runs_4_lambda_run_2")), ".*mh_lambda_(.+)_chain_3", group=1))
+  lambdas = sort(unique(as.numeric(lambdas)))
+  #print(lambdas)
+  
+  empirical_criteria = c()
+  
+  
+  i=1
+  for (f in files){
+    obj <- readRDS(f)
+    
+    #cat(sprintf("\nRead file: %s \n", f))
+    # Read BIC traces, remove unaccounted burnin, and after that
+    # take first K  BIC values for empirical rule
+    
+    bt  <- obj$rs$bic_trace[bic_burnin : (K+bic_burnin)]
+    min_bic = min(bt)
+    max_bic = max(bt)
+    
+    if (max_min_diff){
+      cat(sprintf("For lam=%.2f, max_bic-min_bic=%.3f\n",
+                lambdas[i], max_bic-min_bic))
+      # obtain normalized difference between smallest and greatest BIC
+      # exp(-lambda*BIC_min) / (exp(-lambda*BIC_min) + exp(-lambda*BIC_max))
+      # = 1 / (1 + exp(-lambda*BIC_max + lambda*BIC_min))
+      # = 1 / (1 + exp(-lambda * (BIC_max - BIC_min))
+      # = plogis(lambda*(BIC_max - BIC_min))
+      empirical_criteria[i] =  stats::plogis(lambdas[i]*(max_bic - min_bic))
+    } else {
+      empirical_criteria[i] =  min_bic
+    }
+    
+    i = i + 1
+    
+  }
+  names(empirical_criteria) = lambdas
+  sort(empirical_criteria)
+
+     
+}
+  
+#bic_max_min_diff()
+
+```
+
+```{r}
+bic_max_min_diff(K=3000, max_min_diff=TRUE)
+```
+
+```{r}
+bic_max_min_diff(K=2000)
+```
+
+```{r}
+bic_max_min_diff(K=3000)
+```
+
+
+```{r}
+bic_max_min_diff(K=5000)
+```
+
+
+# RS on core vars?
+
+```{r}
+Gibbs.on.core.vars = Gibbs.random.search.lambda(
+  v0=rep(1, length(varnames_elites[[1]])),
+  data=data.frame(X[,varnames_elites[[1]]], y),
+  lambda=3,
+  debug=TRUE
+)
+```
+
+
+```{r}
+MH.on.elite.vars = MH.random.search(
+  #v0=rep(1,length(varnames_elites[[1]])),
+  v0=tail(mh_lambda_0.75_chain_3$rs$samples, n=1),
+  data=data.frame(X, y),
+  lambda=0.75,
+  debug=TRUE
+)
+```
+
+
+```{r}
+Gibbs.on.elite.vars = Gibbs.random.search.lambda(
+  #v0=rep(1,length(varnames_elites[[1]])),
+  v0=rbinom(length(varnames_elites[[1]]), size=1, prob=0.5),
+  data=data.frame(X[,varnames_elites[[1]]], y),
+  lambda=1.5,
+  debug=TRUE
+)
+```
+
+
+# Try compute BIC for marginals > 0.5?
+
+
+```{r}
+
+vars_lam0.75_gt_0.5 = (inclusion_summary_lam_0.75 %>% filter(p_hat >= 0.5))$variable
+
+for (k in 1:length(vars_lam0.75_gt_0.5)){
+  bic_first_k_rel_freqs = compute.BIC.auto(data.frame(X, y),
+                 colnames(X) %in% vars_lam0.75_gt_0.5[1:k]
+                 )
+  cat(sprintf("BIC for first %d vars with highest rel freqs: %.3f\n", k, bic_first_k_rel_freqs))
+}
+
+
+
+
+```
+# Proportion of top k marginal freqs containing core vars
+
+```{r}
+
+for (k in length(core_vars_among_elites):nrow(inclusion_summary_lam_0.75)){
+     how_many_top_ks_match_cores = length(
+              intersect(
+                (inclusion_summary_lam_0.75$variable)[1:k],
+                core_vars_among_elites
+              )
+     )
+     
+    cat(sprintf("Proportion of Top %d marginal freqs matching core vars: %.3f (i.e. %d out of %d) \n",
+                k, how_many_top_ks_match_cores/length(core_vars_among_elites),
+                how_many_top_ks_match_cores, length(core_vars_among_elites))
+        )
+
+    if (how_many_top_ks_match_cores == length(core_vars_among_elites)){
+      print(k)
+      print((inclusion_summary_lam_0.75$variable)[1:k])
+      break
+    }
+}
+
+
+
+```
+
+```{r}
+
+setdiff(
+    core_vars_among_elites, 
+    (inclusion_summary_lam_0.75$variable)[1:41]
+)
+```
+
+
+# Stepwise?
+```{r}
+basemod = glm(y ~ 1, data=data.frame(X,y), family=binomial)
+stepmod = step(basemod,
+               scope=as.formula(paste("~ ", paste(colnames(X), collapse= "+"))),
+               k=log(nrow(X)))
+```
+
+## Compute its BIC value
+
+```{r}
+#saveRDS(stepmod,
+#        here("output", "validation_outputs", "stepmod.rds"))
+```
+
+
+```{r}
+
+compute.BIC.auto(data.frame(X,y),
+                 colnames(X) %in% names(stepmod$coefficients))
+
+
+```
+## Compute CV log loss, AUCPR
+
+```{r}
+cv_logloss(X, y, colnames(X) %in% names(stepmod$coefficients))
+```
+```{r}
+cv_aucpr(X, y, colnames(X) %in% names(stepmod$coefficients))
+```
+
+```{r}
+cv_deviance_stepwise = cv_deviance_rs(X, y,
+                     vars = names(stepmod$coefficients)[!names(stepmod$coefficients) %in% c("(Intercept)")],
+                     foldid = foldid)
+cv_deviance_stepwise
+```
+
+
+# Proportion of top k marginal freqs containing core vars
+
+```{r}
+
+
+
+for (k in length(varnames_elites[[25]]):nrow(inclusion_summary_lam_0.75)){
+     how_many_top_ks_match_best_elites = length(
+              intersect(
+                (inclusion_summary_lam_0.75$variable)[1:k],
+                varnames_elites[[25]]
+              )
+     )
+     
+    cat(sprintf("Proportion of Top %d marginal freqs matching best elite vars: %.3f (i.e. %d out of %d) \n",
+                k, how_many_top_ks_match_best_elites/length(varnames_elites[[25]]),
+                how_many_top_ks_match_best_elites, length(varnames_elites[[25]]))
+        )
+
+    if (how_many_top_ks_match_best_elites == length(varnames_elites[[25]])){
+      print(k)
+      print((inclusion_summary_lam_0.75$variable)[1:k])
+      break
+    }
+}
+
+
+
+```
+
+```{r}
+
+compute.BIC.auto(
+  data.frame(X,y),
+  colnames(X) %in% (inclusion_summary_lam_0.75 %>% filter(p_hat >= 0.5))$variable
+) / 2
+
+
+```
+
+```{r}
+
+compute.BIC.auto(
+  data.frame(X,y),
+  core_vars_among_elites
+) /2
+
+
+```
+
+
+
+```{r}
+p_chart_slowest_converging_vars(mh_lambda_0.75_chain_1$rs$samples,
+                                metric='MCSE')
+```
+
+
+# Top pressure-level core variables
+
+```{r}
+compute.BIC.auto(data.frame(X,y),
+                 colnames(X) %in%
+                   c("Coriolis_parameter_absolute",
+                     "vorticity_relative_at_700_hPa",
+                     "medium_cloud_cover",
+                     "wind_u_at_1000_hPa",
+                     "divergence",
+                     "vertical_velocity_at_700_hPa",
+                     "potential_vorticity_at_850_hPa",
+                     "temperature",
+                     "geopotential_at_500_hPa",
+                     "vertical_wind_shear_between_925_hPa_and_1000_hPa",
+                     "potential_vorticity_at_400_hPa",
+                     "wind_v_at_200_hPa",
+                     "sea_surface_temperature",
+                     "vorticity_relative_at_200_hPa",
+                     "vertical_wind_shear_between_200_hPa_and_850_hPa",
+                     "wind_u_at_925_hPa",
+                     "vorticity_relative_at_850_hPa",
+                     "specific_humidity_at_200_hPa",
+                     "divergence_at_700_hPa"))
+```
+
+
+
+```{r}
+cv_logloss(X, y,
+           vars=c("Coriolis_parameter_absolute",
+                     "vorticity_relative_at_700_hPa",
+                     "medium_cloud_cover",
+                     "wind_u_at_1000_hPa",
+                     "divergence",
+                     "vertical_velocity_at_700_hPa",
+                     "potential_vorticity_at_850_hPa",
+                     "temperature",
+                     "geopotential_at_500_hPa",
+                     "vertical_wind_shear_between_925_hPa_and_1000_hPa",
+                     "potential_vorticity_at_400_hPa",
+                     "wind_v_at_200_hPa",
+                     "sea_surface_temperature",
+                     "vorticity_relative_at_200_hPa",
+                     "vertical_wind_shear_between_200_hPa_and_850_hPa",
+                     "wind_u_at_925_hPa",
+                     "vorticity_relative_at_850_hPa",
+                     "specific_humidity_at_200_hPa",
+                     "divergence_at_700_hPa"))
+```
+
+
+
+# Claim: non-core variables having p_hat >= 0.5 are just included in suboptimal models.
+
+```{r}
+non_core_vars_phat_gt_0.5 = (inclusion_summary_lam_0.75 %>%
+  filter(!variable %in% core_vars_among_elites) %>%
+  filter(p_hat >= 0.5))$variable
+```
+
+```{r}
+(inclusion_summary_lam_0.75 %>%
+  filter(!variable %in% core_vars_among_elites) %>%
+  filter(p_hat >= 0.5))
+```
+
+
+
+
+
+
+
+```{r}
+
+#non_core_vars_phat_gt_0.5 = (inclusion_summary_lam_0.75 %>%
+#  filter(!variable %in% core_vars_among_elites) %>%
+#  filter(p_hat >= 0.5))$variable
+
+
+#mh_lambda_0.75_chains = list(
+#  mh_lambda_0.75_chain_1,
+#  mh_lambda_0.75_chain_2,
+#  mh_lambda_0.75_chain_3,
+#  mh_lambda_0.75_chain_4
+#)
+
+n_chains <- length(mh_lambda_0.75_chains)
+burn     <- 1000L
+
+#chain_idxs = seq_len(n_chains)
+chain_idxs = c(3)
+
+for (non_core_var in non_core_vars_phat_gt_0.5) {
+  for (chain_idx in chain_idxs) {
+    chains <- mh_lambda_0.75_chains[[chain_idx]]
+    cat(sprintf("\nInvestigating %s in chain %d\n", non_core_var, chain_idx))
+
+    # post-burn BIC; check alignment
+    bic_post <- chains$rs$bic_trace[(burn+1):length(chains$rs$bic_trace)]
+    stopifnot(nrow(chains$rs$samples) == length(bic_post))
+
+    # obtain indices
+    sel_idx <- which(chains$rs$samples[, non_core_var] == 1L)
+
+    if (length(sel_idx) == 0L) {
+      prop_near <- 0
+    } else {
+      # choose your baseline: global best or best at this λ
+      delta <- bic_post[sel_idx] - best_BIC_minimizer_all_lambda$best$BIC
+      
+      # HOW many distinct near optimal models among all models containing non_core_var
+      n_distinct_nearoptimal_mods = length(
+        unique(
+          apply(chains$rs$samples[which(delta <= 2), ],
+            MARGIN=1,
+            function(x)paste0(x,collapse=""))
+        )
+      )
+      # HOW many distinct models containing non_core_var
+      n_distinct_models = length(
+        unique(
+          apply(chains$rs$samples[sel_idx, ],
+            MARGIN=1,
+            function(x)paste0(x,collapse=""))
+        )
+      )
+      
+      prop_near <- n_distinct_nearoptimal_mods / n_distinct_models
+    }
+    cat(sprintf("Proportion near-optimal (ΔBIC ≤ 2): %.4f (i.e. %d DISTINCT near-optimal models out of %d DISTINCT models)\n",
+                prop_near, n_distinct_nearoptimal_mods, n_distinct_models))
+  }
+  cat("----------------------------------------------------------\n")
+}
+
+```
+# Plot core vars for presentation
+
+```{r}
+inclusion_summary_lam_0.75 %>%
+  filter(variable %in% core_vars_among_elites)
+```
+
+
+## Sort by MAXIMUM p_hat for @ family
+
+```{r}
+library(dplyr)
+library(stringr)
+
+# 1. Filter for your core variables
+core_tbl <- inclusion_summary_lam_0.75 %>%
+  filter(variable %in% core_vars_among_elites)
+
+# 2. Extract base variable (physical field) and pressure level label
+core_tbl <- core_tbl %>%
+  mutate(
+    base = case_when(
+      str_detect(variable, "vertical_wind_shear_between_") ~ "vertical_wind_shear",
+      str_detect(variable, "_at_") ~ str_replace(variable, "_at_.*$", ""),
+      TRUE ~ variable
+    ),
+    level = case_when(
+      str_detect(variable, "_between_") ~ str_replace(variable, ".*_between_", "") |> str_replace_all("_", " "),
+      str_detect(variable, "_at_") ~ str_replace(variable, ".*_at_", "") |> str_replace_all("_", " "),
+      TRUE ~ "physical"
+    )
+  )
+
+# 3. Compute max p_hat for each base variable
+leaders <- core_tbl %>%
+  group_by(base) %>%
+  summarise(max_phat_base = max(p_hat, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(max_phat_base), base) %>%
+  mutate(base_rank = row_number())
+
+# 4. Join base ranking back to the full table
+ordered_tbl <- core_tbl %>%
+  left_join(leaders, by = "base") %>%
+  arrange(base_rank, desc(p_hat), level) %>%
+  select(base, level, p_hat, ess, se, lower, upper, variable, base_rank)
+
+
+```
+
+```{r}
+ordered_tbl
+```
+
+## Take maxs only 
+```{r}
+winners_only <- core_tbl %>%
+  group_by(base) %>%
+  filter(p_hat == max(p_hat, na.rm = TRUE)) %>%
+  ungroup() %>%
+  left_join(leaders %>% mutate(base_rank = row_number()), by = c("base","p_hat"="max_phat_base")) %>%
+  arrange(base_rank, level) %>%
+  select(base, level, p_hat, variable)
+
+```
+
+```{r}
+winners_only
+```
+
+## Begin plotting!
+
+
+```{r}
+
+#install.packages('ggtext')
+
+# ---- packages ----
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(ggtext)      # to render bold labels on the y-axis
+# ordered_tbl, winners_only, core_coefs_df are assumed to exist (as in your last message)
+
+# ---- 1) decide which winners to emphasize (or pass your own subset) ----
+emphasize_vars <- winners_only$variable       # <- or provide a character vector yourself
+
+# ---- 2) sign summary for winners from coefficient draws across elite models ----
+sign_map <- core_coefs_df %>%
+  filter(term %in% winners_only$variable) %>%
+  group_by(variable = term) %>%
+  summarise(min_est = min(estimate, na.rm = TRUE),
+            max_est = max(estimate, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(sign_cat = case_when(
+    min_est > 0 ~ "positive",
+    max_est < 0 ~ "negative",
+    TRUE        ~ "mixed"
+  ))
+
+# nice, desaturated palette
+pal <- c(positive = "#78A9CF",   # muted blue
+         negative = "#E07B73",   # muted red
+         mixed    = "#B8A56A")   # muted brown/olive
+gray_bar <- "#D0D0D0"
+
+# ---- 3) mark winners, attach sign category, and make plotting labels ----
+plot_df <- ordered_tbl %>%
+  mutate(is_winner = variable %in% emphasize_vars) %>%
+  left_join(sign_map, by = c("variable")) %>%
+  mutate(fill_col = ifelse(is_winner, pal[sign_cat], gray_bar),
+         # pretty left labels: base (+ level if not "physical")
+         label = ifelse(level == "physical",
+                        base,
+                        paste0(base, " (", level, ")"))
+  )
+
+# ---- 4) boldface Gray’s six canonical predictors on the y-axis ----
+grays_vars <- c(
+  "Coriolis_parameter_absolute",
+  "vorticity_relative_at_850_hPa",      # low-level rel. vorticity (choose the one you want)
+  "vertical_wind_shear_between_200_hPa_and_850_hPa",  # deep-layer shear; adjust if you prefer 200–950
+  "sea_surface_temperature",
+  "equiv_pot_temperature_diff_between_surface_and_500_hPa",
+  "relative_humidity_at_700_hPa"        # mid-tropospheric humidity
+)
+
+plot_df <- plot_df %>%
+  mutate(label_md = ifelse(variable %in% grays_vars,
+                           paste0("**", label, "**"),
+                           label))
+
+# ---- 5) y ordering: follow your base_rank then within-base p_hat desc ----
+plot_df <- plot_df %>%
+  arrange(base_rank, desc(p_hat)) %>%
+  mutate(label_md = factor(label_md, levels = rev(unique(label_md))))  # rev for horizontal bars
+
+# ---- 6) build plot ----
+p <- ggplot(plot_df, aes(x = p_hat, y = label_md)) +
+  geom_col(aes(fill = I(fill_col)), width = 0.8) +
+  scale_x_continuous("Inclusion probability (p̂)", limits = c(0, 1)) +
+  labs(
+    y = NULL,
+    title = "Core variable importance by physical family & pressure level",
+    subtitle = "Colored bars = dominant level(s) per family; color shows coefficient sign across elite models"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "none",
+    axis.text.y = element_markdown(lineheight = 1.2),   # enables bold labels
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p
+
+
+```
+
+
+
+
+# DEBUGGIN PACKAGE: need >= 0.52 of xfun
+
+```{r}
+    all_packages <- installed.packages()
+    package_names <- rownames(all_packages)
+
+    packages_using_xfun <- character()
+
+    for (pkg in package_names) {
+      desc_file <- file.path(find.package(pkg), "DESCRIPTION")
+      if (file.exists(desc_file)) {
+        desc_content <- readLines(desc_file)
+        if (any(grepl("xfun", desc_content, ignore.case = TRUE))) {
+          packages_using_xfun <- c(packages_using_xfun, pkg)
+        }
+      }
+    }
+
+    print(packages_using_xfun)
+
+
+```
+
+```{r}
+## 0) Restart R (in RStudio: Session > Restart R)
+
+## 1) See where xfun is coming from
+.libPaths()
+find.package("xfun", quiet = TRUE)
+packageVersion("xfun")
+
+## 2) Remove ANY installed copies across all lib paths
+for (p in .libPaths()) {
+  ip <- rownames(installed.packages(lib.loc = p))
+  if ("xfun" %in% ip) remove.packages("xfun", lib = p)
+}
+
+## 3) Install fresh (pick one)
+install.packages("xfun", repos = "https://cloud.r-project.org", dependencies = TRUE)
+# Windows/macOS binary explicitly:
+# install.packages("xfun", type = "binary", repos = "https://cloud.r-project.org")
+
+## 4) Verify
+packageVersion("xfun")   # should be >= "0.52"
+
+```
+
+## consider multi-level dimensions
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggtext)   # for bold strip labels
+
+# --- 1) Mark winners (dominant level per family) and attach sign category ----
+sign_by_var <- core_coefs_df %>%
+  group_by(term) %>%
+  summarize(
+    pos = all(estimate > 0),
+    neg = all(estimate < 0),
+    .groups = "drop"
+  ) %>%
+  transmute(
+    variable = term,
+    sign_cat = case_when(
+      pos ~ "pos",
+      neg ~ "neg",
+      TRUE ~ "mix"
+    )
+  )
+
+plot_df <- ordered_tbl %>%
+  left_join(sign_by_var, by = "variable") %>%
+  mutate(
+    winner = variable %in% winners_only$variable,
+    sign_cat = ifelse(winner, sign_cat, "other")   # gray for non-winners
+  )
+
+# --- 2) Bold Gray’s 6 canonical predictors in the facet strips ---------------
+grays_six <- c(
+  "Coriolis_parameter_absolute",
+  "vorticity_relative",                        # family label (low-level: 200–850 hPa shows up)
+  "vertical_wind_shear",
+  "sea_surface_temperature",
+  "equiv_pot_temperature_diff_between_surface_and_500_hPa",
+  "relative_humidity"
+)
+
+# Build a custom labeller for the facet strips
+strip_labs <- unique(plot_df$base)
+strip_map  <- setNames(
+  ifelse(strip_labs %in% grays_six,
+         paste0("<b>", strip_labs, "</b>"),
+         strip_labs),
+  strip_labs
+)
+
+# --- 3) Factor order: families by your base_rank, levels in the order they appear
+plot_df <- plot_df %>% 
+  mutate(
+    base  = reorder(base, base_rank),
+    level = factor(level, levels = rev(unique(level)))  # reversed so top-to-bottom matches table
+  )
+
+
+```
+
+
+
+```{r}
+library(scales)
+
+label_num <- function(x) sprintf("%.2f", x)   # 0.00–1.00 format
+
+SCALE_DOWN_FACTOR=0.5
+p <- ggplot(plot_df, aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 3.1, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, SCALE_DOWN_FACTOR*max(plot_df$p_hat)),
+                     breaks = seq(0, 1, 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 11) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    panel.grid.major.x = element_line(color = "grey85", linewidth = 0.2),
+    panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.2),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 10)
+    ),
+    legend.position = "left"
+  )
+
+p
+
+```
+
+```{r}
+
+SCALE_DOWN_FACTOR=0.05
+p <- ggplot(plot_df %>% filter(winner==TRUE),
+            aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 3.1, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, SCALE_DOWN_FACTOR*max(plot_df$p_hat)),
+                     breaks = seq(0, SCALE_DOWN_FACTOR*max(plot_df$p_hat), 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 11) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    panel.grid.major.x = element_line(color = "grey85", linewidth = 0.2),
+    panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.2),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 5)
+    ),
+    legend.position = "left"
+  )
+
+p
+```
+
+
+
+```{r}
+
+SCALE_DOWN_FACTOR=0.05
+p <- ggplot(plot_df %>% filter(winner==TRUE & sign_cat=="pos"),
+            aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 3.1, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, SCALE_DOWN_FACTOR*max(plot_df$p_hat)),
+                     breaks = seq(0, SCALE_DOWN_FACTOR*max(plot_df$p_hat), 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 11) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    panel.grid.major.x = element_line(color = "grey85", linewidth = 0.2),
+    panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.2),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 5)
+    ),
+    legend.position = "right"
+  )
+
+p
+```
+
+
+
+```{r}
+
+SCALE_DOWN_FACTOR=0.15
+p <- ggplot(plot_df %>% filter(winner==TRUE & sign_cat=="neg"),
+            aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 5, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, 0.5),
+                     breaks = seq(0, 0.5, 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 20) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    #panel.grid.major.x = element_line(color = "grey85", linewidth = 0.05),
+    #panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.05),
+    
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 5)
+    ),
+    legend.position.inside = c(0.55, 0.5),
+    legend.position = "inside"
+  )
+
+p
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots",
+            "neg_core_vars.png"),
+       p, width = 10, height = 9, units = "in", bg='white',
+       scale=1.3 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+```
+
+```{r}
+
+SCALE_DOWN_FACTOR=0.15
+p <- ggplot(plot_df %>% filter(winner==TRUE & sign_cat=="pos"),
+            aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 5, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, 0.5),
+                     breaks = seq(0, 0.5, 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 20) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    #panel.grid.major.x = element_line(color = "grey85", linewidth = 0.05),
+    #panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.05),
+    
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 5)
+    ),
+    legend.position.inside = c(0.55, 0.5),
+    legend.position = "inside"
+  )
+
+p
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots",
+            "pos_core_vars.png"),
+       p, width = 10, height = 9, units = "in", bg='white',
+       scale=1.3 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+```
+
+```{r}
+
+SCALE_DOWN_FACTOR=0.15
+p <- ggplot(plot_df %>% filter(winner==TRUE & sign_cat=="mix"),
+            aes(x = SCALE_DOWN_FACTOR*p_hat, y = level, fill = sign_cat)) +
+  # thinner bars
+  geom_col(width = 0.38) +
+  # value labels just outside the right edge of each bar
+  geom_text(aes(label = label_num(p_hat)),
+            hjust = -0.15, size = 5, color = "grey20") +
+  facet_grid(
+    rows = vars(base),
+    scales = "free_y",
+    space  = "free_y",
+    switch = "y",
+    labeller = labeller(base = strip_map)
+  ) +
+  scale_fill_manual(
+    values = c(pos="#5BA4D0", neg="#D06A6A", mix="#B69569", other="#D9D9D9"),
+    breaks = c("pos","neg","mix"), labels = c("positive","negative","mixed"), name = NULL
+  ) +
+  # give extra space at right so labels fit; keep subtle vertical guides
+  scale_x_continuous(limits = c(0, 0.5),
+                     breaks = seq(0, 0.5, 0.1),
+                     expand = expansion(mult = c(0.01, 0.12))) +
+  labs(x = NULL, y = NULL) +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 20) +
+  theme(
+    # soften vertical guides; remove x labels/ticks
+    #panel.grid.major.x = element_line(color = "grey85", linewidth = 0.05),
+    #panel.grid.minor.x = element_line(color = "grey92", linewidth = 0.05),
+    
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor.y = element_blank(),
+
+    panel.spacing.y    = unit(10, "pt"),
+    strip.placement    = "outside",
+    strip.background.y = element_blank(),
+    strip.text.y.left  = element_markdown(
+      angle = 0, hjust = 0, vjust = 0.5, lineheight = 1.05, margin = margin(r = 5)
+    ),
+    legend.position.inside = c(0.55, 0.5),
+    legend.position = "inside"
+  )
+
+p
+
+ggsave(here("output", "mh_runs_4_lambda_run_2_plots",
+            "mixed_core_vars.png"),
+       p, width = 10, height = 9, units = "in", bg='white',
+       scale=1.3 # Scale all plot elements (text, points, spacing) with the canvas
+       )
+```
+
+
+
+
+
+
+```{r}
+
+```
+
+
+
+# Investigate coef for equiv_pot?
+
+```{r}
+core_coefs_df %>%
+  filter(str_detect(term, "equiv")) %>% 
+  arrange(desc(estimate))
+```
+
+
+```{r}
+best_BIC_minimizer_all_lambda$elite$BIC
+```
+
+
+```{r}
+
+mod_idx_equiv_pot_coefs_gt_0 = (core_coefs_df %>%
+  filter(str_detect(term, "equiv") & estimate > 0) %>% 
+  arrange(desc(estimate)) )$model_id
+
+
+vars_in_mod_equiv_pot_coefs_gt_0 = Reduce(intersect,varnames_elites[mod_idx_equiv_pot_coefs_gt_0])
+
+
+mod_idx_equiv_pot_coefs_le_0 = (core_coefs_df %>%
+  filter(str_detect(term, "equiv") & estimate <= 0) %>% 
+  arrange(desc(estimate)) )$model_id
+
+vars_in_mod_idx_equiv_pot_coefs_le_0 = Reduce(intersect,varnames_elites[mod_idx_equiv_pot_coefs_le_0])
+
+```
+
+```{r}
+sort(
+  best_BIC_minimizer_all_lambda$elite$BIC[mod_idx_equiv_pot_coefs_gt_0]
+)
+
+```
+
+```{r}
+sort(
+  best_BIC_minimizer_all_lambda$elite$BIC[mod_idx_equiv_pot_coefs_le_0]
+)
+```
+```{r}
+sort(
+  best_BIC_minimizer_all_lambda$elite$k[mod_idx_equiv_pot_coefs_gt_0]
+)
+```
+
+```{r}
+sort(
+  best_BIC_minimizer_all_lambda$elite$k[mod_idx_equiv_pot_coefs_le_0]
+)
+```
+
+Test: is each model on the >0 coef *nested* on any model for the >0 coef?
+
+
+
+
+
+# BIC density plot for presentaion
+```{r}
+ggplot(data.frame(BIC=unlist(S_list_MH)[unlist(S_list_MH) <= 9800]),
+       aes(x=BIC)) +
+  geom_density(fill='red', bw=1.2, alpha=0.1) +
+  theme_classic() + 
+  xlim(9650, 9740) +
+
+  labs(title="Illustration of BIC distributions \n in high dimensional model spaces",
+       caption = "Illustration of 160,000 BIC values from sampled models in a 149-variable space.\nEach peak corresponds to clusters of models with similar quality.") + 
+  theme(
+    axis.ticks = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.text.y  = element_blank(),
+    plot.title = element_text(hjust = 0.5, # Center the title
+                                  color = "black",
+                                  size = 16,
+                                  face = "bold"),
+    plot.caption = element_text(size = 7.5, colour = "grey30", hjust = 0),
+    plot.caption.position = "plot" )    # puts caption below panel
+```
+
+
+```{r}
+ggplot(data.frame(BIC=unlist(S_list_MH)[unlist(S_list_MH) <= 9800]),
+       aes(x=BIC)) +
+  geom_density(fill='green', bw=4, alpha=0.1) +
+  theme_classic() + 
+  xlim(9660, 9740) +
+
+  labs(title="Illustration of BIC distributions \n in low dimensional model spaces",
+       caption = "Illustration of 160,000 BIC values from sampled models in a 149-variable space.") + 
+  theme(
+    axis.ticks = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x  = element_blank(),
+    axis.text.y  = element_blank(),
+    plot.title = element_text(hjust = 0.5, # Center the title
+                                  color = "black",
+                                  size = 16,
+                                  face = "bold"),
+    plot.caption = element_text(size = 7.5, colour = "grey30", hjust = 0),
+    plot.caption.position = "plot" )    # puts caption below panel
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+library(ggplot2)
+
+make_bic_panel <- function(x, title, fill_col, bw = NULL,
+                           bic_min = NULL, delta2 = 2,
+                           xlim = range(x, na.rm = TRUE)) {
+  # clean
+  x <- x[is.finite(x)]
+  stopifnot(is.numeric(x), length(x) > 1)
+
+  if (is.null(bic_min)) bic_min <- min(x, na.rm = TRUE)
+
+  df <- data.frame(BIC = x)
+
+  ggplot(df, aes(BIC)) +
+    # ΔBIC band as annotate() to avoid “length 1” warnings
+    annotate("rect",
+             xmin = bic_min - delta2, xmax = bic_min,
+             ymin = -Inf, ymax = Inf,
+             fill = "grey90", alpha = 0.5) +
+    geom_density(fill = fill_col, colour = "black",
+                 bw = bw, na.rm = TRUE) +
+    geom_vline(xintercept = bic_min, linetype = 2, linewidth = 0.4) +
+    scale_x_continuous(limits = xlim, expand = c(0, 0)) +
+    scale_y_continuous(expand = c(0, 0), breaks = NULL) +
+    labs(title = title, x = "BIC", y = NULL) +
+    theme_classic() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_blank(),
+          plot.title = element_text(face = "bold", size = 14, hjust = 0.5))
+}
+
+
+# Example usage (replace x_easy/x_hard with your two BIC vectors or the same vector with different bw)
+x <- unlist(S_list_MH)                     # your 160k BICs
+#rng <- quantile(X, c(.01, .99), na.rm = TRUE)  # common x-range
+
+rng <- c(9650, 9740)
+p_easy <- make_bic_panel(x, "…low-dimensional feel", "#cfeecf",
+                         bw = 4, xlim = rng)
+p_hard <- make_bic_panel(x, "…high-dimensional feel", "#f6c7c7",
+                         bw = 0.8, xlim = rng)
+
+
+cowplot::plot_grid(p_easy, p_hard, ncol = 1, rel_heights = c(1,1))
+
+```
+
+
+
+
+```{r}
+plot(X[,'geopotential_at_200_hPa'], X[,'geopotential_at_500_hPa'])
+```
+
+
+# Check mode
+
+
+```{r}
+library(dplyr)
+library(tibble)
+library(purrr)
+
+# --- helpers ---------------------------------------------------------------
+check_mode = function(){
+      # turn a 0/1 vector into a compact key (for counting)
+    .bin_key <- function(v) paste0(v, collapse = "")
+    
+    # compute Hamming distance between two 0/1 model vectors
+    ham_dist <- function(a, b){
+      cat(sprintf("calculating hamming distance of a,b with lengths %d and %d\n",length(a),length(b)))
+      dist = sum(a != b)
+      cat(sprintf("done calculating hamming distance\n"))
+      dist
+    }
+    
+    # return the mode model of a chain (post burn-in)
+    mode_model <- function(chain, burn = 1000) {
+      #S   <- chain$rs$samples[(burn+1):nrow(chain$rs$samples), , drop = FALSE]
+      S   <- chain$rs$samples
+      bic <- chain$rs$bic_trace[(burn+1):length(chain$rs$bic_trace)]  # aligns to S rows
+      cat(sprintf("nrow(S)=%d, length(bic)=%d\n", nrow(S), length(bic)))
+    
+      keys <- apply(S, 1, .bin_key)
+      tab  <- sort(table(keys), decreasing = TRUE)
+      topk <- names(tab)[1]
+      idx  <- which(keys == topk)
+    
+      v_mode <- as.integer(strsplit(topk, "")[[1]])
+    
+      list(
+        key        = topk,
+        v          = v_mode,
+        count      = as.integer(tab[1]),
+        prop       = as.integer(tab[1]) / nrow(S),
+        bic_min    = min(bic[idx]),
+        bic_median = median(bic[idx]),
+        idx        = idx
+      )
+    }
+    
+    # convenience: summarize a chain against the global best
+    summarize_chain_mode <- function(chain, chain_id, best) {
+      mm <- mode_model(chain)
+      tibble(
+        chain   = chain_id,
+        visits  = mm$count,
+        prop    = mm$prop,
+        bic_min = mm$bic_min,
+        dBIC    = mm$bic_min - best$BIC,
+        hamming_to_global_best = ham_dist(mm$v, colnames(X) %in% best$v),
+        key     = mm$key
+      )
+    }
+    
+    # --- data you already have -------------------------------------------------
+    # mh_lambda_0.75_chain_1 .. _4
+    # best_BIC_minimizer_all_lambda$best$v and $BIC
+    
+    chains_075 <- list(
+      `1: full`   = mh_lambda_0.75_chain_1,
+      `2: empty`  = mh_lambda_0.75_chain_2,
+      `3: sparse` = mh_lambda_0.75_chain_3,
+      `4: random` = mh_lambda_0.75_chain_4
+    )
+    
+    # --- main summaries --------------------------------------------------------
+    
+    mode_summaries <- imap_dfr(chains_075, ~ summarize_chain_mode(.x, .y, best_BIC_minimizer_all_lambda$best))
+    
+    mode_summaries
+    # Columns:
+    # chain | visits | prop | bic_min | dBIC | hamming_to_global_best | key
+    
+    # do all chains share the same modal model?
+    all_same_mode <- n_distinct(mode_summaries$key) == 1
+    all_same_mode
+    
+    # if not, show which chains agree
+    split(mode_summaries$chain, mode_summaries$key)
+    
+    # --- optional: top-K modes per chain --------------------------------------
+    
+    top_k_modes <- function(chain, K = 5, burn = 1000) {
+      #S   <- chain$rs$samples[(burn+1):nrow(chain$rs$samples), , drop = FALSE]
+      S   <- chain$rs$samples
+      bic <- chain$rs$bic_trace[(burn+1):length(chain$rs$bic_trace)]
+      cat(sprintf("nrow(S)=%d, length(bic)=%d\n", nrow(S), length(bic)))
+      keys <- apply(S, 1, .bin_key)
+      tab  <- sort(table(keys), decreasing = TRUE)
+      out_keys <- names(tab)[seq_len(min(K, length(tab)))]
+      map_dfr(out_keys, function(k) {
+        idx  <- which(keys == k)
+        v    <- as.integer(strsplit(k, "")[[1]])
+        tibble(
+          key = k,
+          visits = as.integer(tab[k]),
+          prop = as.integer(tab[k]) / nrow(S),
+          bic_min = min(bic[idx]),
+          bic_median = median(bic[idx]),
+          hamming_to_global_best = ham_dist(v,
+                                            colnames(X) %in% best_BIC_minimizer_all_lambda$best$v)
+        )
+      })
+    }
+    
+    top5_by_chain <- imap(chains_075, ~ top_k_modes(.x, K = 5) %>% mutate(chain = .y)) %>% bind_rows()
+    top5_by_chain %>% arrange(chain, desc(prop))
+}
+
+check_mode_0.75 = check_mode()
+check_mode_0.75
+```
+```{r}
+check_mode_0.75 %>% filter(chain == "3: sparse")
+```
+
+## IT TURNS OUT SECOND MOST FREQUENT MODEL EXACTLY COINCIDES WITH GLOBAL MINIMIZER!!
+
+```{r}
+
+check_mode_0.75 %>%
+  filter(chain == "3: sparse") %>%
+  select(visits, prop, bic_min, hamming_to_global_best, chain)
+
+```
+```{r}
+xtable(
+  check_mode_0.75 %>%
+  filter(chain == "3: sparse") %>%
+  select(visits, prop, bic_min, hamming_to_global_best, chain)
+)
+```
+
+
+
+IT TURNS OUT THE SECOND MOST FREQUENT MODEL MATCHES THE BIC MINMIZER!!!!
+
+```{r}
+setdiff(varnames_elites[[1]],
+          colnames(X)[sapply(str_split((check_mode_0.75 %>% filter(chain == "3: sparse"))$key[2], "")[[1]], function(x)as.logical(as.integer(x)))])
+```
+```{r}
+setdiff(colnames(X)[sapply(str_split((check_mode_0.75 %>% filter(chain == "3: sparse"))$key[2], "")[[1]], function(x)as.logical(as.integer(x)))],varnames_elites[[1]]
+          )
+```
+
+
+

@@ -1,0 +1,353 @@
+---
+title: "record_simulation_setups"
+author: "Keith Howen"
+date: "2025-09-23"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(NA)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+#source(here("lib", "factorial_analysis_routines.R"))
+
+#library(mvtnorm)
+#library(truncnorm)
+#library(Matrix)
+#library(MASS)
+#library(splitstackshape)
+
+library(knitr)
+library(kableExtra)
+```
+
+
+```{r}
+list.files(here("output"))
+```
+
+
+```{r}
+list.files(here("output", "simulation_factorial_analysis_n_2000_p_160_outputs" ))
+```
+
+# n=200,p=16
+
+## reading sim quantities
+
+```{r}
+
+results_n_200_p_16 = readRDS(
+  here("output",
+       "simulation_factorial_analysis_n_200_p_16_outputs",
+       "results.rds")
+)
+
+```
+
+```{r}
+names(results_n_200_p_16)
+names(results_n_200_p_16[["0"]])
+```
+
+```{r}
+names(results_n_200_p_16[["0"]][["strong"]])
+```
+
+
+
+```{r}
+CORR_LEVELS = c("0", "0.5", "0.9", "-0.5", "-0.9")
+SN_LEVELS = c("strong", "moderate", "weak")
+
+
+for (c_level in CORR_LEVELS){
+  for (sn_level in SN_LEVELS){
+    #cat(sprintf("corr_level: %s, sn_level: %s\n", c_level, sn_level))
+    
+    xtable_obj = xtable(
+                    summary(results_n_200_p_16[[c_level]][[sn_level]]$mod),
+                    digits=c(0,9,9,9,9),
+                    caption=sprintf("$Corr(X1,X2)=%s$, SNR=%s", c_level, sn_level)
+        )
+    
+    print(xtable_obj, type='latex', table.placement="H")
+
+    
+    #cat("--------------------------\n")
+    
+  }
+}
+
+```
+
+
+
+# n=2000,p=16
+```{r}
+list.files(here("output", "simulation_factorial_analysis_n_2000_p_16_outputs" ))
+```
+
+```{r}
+
+names(
+  readRDS(
+  here("output", "simulation_factorial_analysis_n_2000_p_16_outputs",
+       "result.c10.rds")
+)
+)
+
+
+
+
+```
+
+
+
+
+
+✅Combination 1/c1: corr(X1,X2)=0, high s/n
+✅Combination 2/c2: corr(X1,X2)=+0.5, high s/n
+✅Combination 3/c3: corr(X1,X2)=+0.9, high s/n
+✅Combination 4/c4: corr(X1,X2)=-0.5, high s/n
+✅Combination 5/c5: corr(X1,X2)=-0.9, high s/n
+✅Combination 6/c6: corr(X1,X2)=0, moderate s/n
+✅Combination 7/c7: corr(X1,X2)=+0.5, moderate s/n
+✅Combination 8/c8: corr(X1,X2)=+0.9, moderate s/n
+✅Combination 9/c9: corr(X1,X2)=-0.5, moderate s/n
+✅Combination 10/c10: corr(X1,X2)=-0.9, moderate s/n
+✅Combination 11/c11: corr(X1,X2)=0, weak s/n
+✅Combination 12/c12: corr(X1,X2)=+0.5, weak s/n
+✅Combination 13/c13: corr(X1,X2)=+0.9, weak s/n
+✅Combination 14/c14: corr(X1,X2)=-0.5, weak s/n
+✅Combination 15/c15: corr(X1,X2)=-0.9, weak s/n
+
+
+```{r}
+CORR_LEVELS = c("0", "+0.5", "+0.9", "-0.5", "-0.9")
+SN_LEVELS = c("strong", "moderate", "weak")
+
+meta <- tibble(
+    combination = 1:15,
+    correlation = rep(CORR_LEVELS, length(SN_LEVELS)),
+    s_n = rep(SN_LEVELS, each = length(CORR_LEVELS))
+  )
+meta
+```
+
+
+```{r}
+
+read_all_beta_coefs = function(){
+  
+  BASE_DIR = "simulation_factorial_analysis_n_2000_p_16_outputs"
+  
+  ## 1. INITS 
+  # Metadata for combinations
+  meta <- tibble(
+    combination = 1:15,
+    correlation = rep(CORR_LEVELS, length(SN_LEVELS)),
+    s_n = rep(SN_LEVELS, each = length(CORR_LEVELS))
+  )
+  
+  # dict with 2 keys essentially
+  results <- list()
+  for (rho in CORR_LEVELS) {
+    results[[rho]] <- list()
+    for (s in SN_LEVELS) {
+      results[[rho]][[s]] <- "empty"  
+    }
+  }
+  
+  ## 2. store MCMC samples
+  for (i in 2:15) {
+    
+    combo_id <- paste0("c", i)
+    path_base <- here("output", BASE_DIR)
+    
+    row = readRDS(file.path(path_base, paste0("result.", combo_id, ".rds")))
+
+    # retrieve corresponding (corr_level, sn_level) from
+    # the 'meta' metadata -- have to use redirection like operator
+    # to filter tibbles
+    corr_level = (meta %>% filter(combination == i))$correlation
+    sn_level = (meta %>% filter(combination == i))$s_n
+    
+    results[[corr_level]][[sn_level]] = row
+  }
+  
+  return(results)
+  
+}
+
+
+
+# Final summary table
+results_n_2000_p_16 = read_all_beta_coefs()
+```
+
+
+```{r}
+results_n_2000_p_16[["0"]][["strong"]] = list()
+
+X.c1 = readRDS(here("output", "simulation_factorial_analysis_n_2000_p_16_outputs",
+       "X.c1.rds"))
+
+y.c1 = readRDS(here("output", "simulation_factorial_analysis_n_2000_p_16_outputs",
+       "y.c1.rds"))
+
+
+results_n_2000_p_16[["0"]][["strong"]]$mod = glm(y.c1 ~ .,
+                                                 data=data.frame(X.c1[,1:4],y.c1),
+                                                 family=binomial)
+```
+
+
+
+```{r}
+names(results_n_2000_p_16)
+```
+```{r}
+names(results_n_2000_p_16[["0"]])
+```
+```{r}
+names(results_n_2000_p_16[["0"]][["strong"]])
+```
+```{r}
+results_n_2000_p_16[["+0.5"]][["strong"]]$mod
+```
+```{r}
+xtable(
+  summary(results_n_2000_p_16[["+0.5"]][["strong"]]$mod,
+          digits=c(0,9,9,9,9))
+)
+```
+
+
+```{r}
+CORR_LEVELS = c("0", "+0.5", "+0.9", "-0.5", "-0.9")
+SN_LEVELS = c("strong", "moderate", "weak")
+
+
+for (c_level in CORR_LEVELS){
+  for (sn_level in SN_LEVELS){
+    cat(sprintf("corr_level: %s, sn_level: %s\n", c_level, sn_level))
+    
+    print(
+      xtable(
+          summary(results_n_2000_p_16[[c_level]][[sn_level]]$mod,
+                  digits=c(0,9,9,9,9))
+        )
+    )
+    cat("--------------------------\n")
+    
+  }
+}
+
+```
+
+
+
+# n=2000,p=160
+```{r}
+CORR_LEVELS = c("0","0.9")
+SN_LEVELS = c("moderate")
+
+results_n_2000_p_160 = readRDS(
+  here("output",
+       "simulation_factorial_analysis_n_2000_p_160_outputs",
+       "results_n_2000_p_160.rds")
+)
+
+
+for (c_level in CORR_LEVELS){
+  for (sn_level in SN_LEVELS){
+    #cat(sprintf("corr_level: %s, sn_level: %s\n", c_level, sn_level))
+    
+    xtable_obj = xtable(
+                    summary(results_n_2000_p_160[[c_level]][[sn_level]]$mod),
+                    digits=c(0,9,9,9,9),
+                    caption=sprintf("$Corr(X1,X2)=%s$, SNR=%s", c_level, sn_level)
+        )
+    
+    print(xtable_obj, type='latex', table.placement="H")
+
+    
+    #cat("--------------------------\n")
+    
+  }
+}
+
+```
+
+
+
+# n=10000, p=160
+```{r}
+CORR_LEVELS = c("0.9")
+SN_LEVELS = c("moderate")
+
+results_n_2000_p_160 = readRDS(
+  here("output",
+       "simulation_factorial_analysis_n_10000_p_160_outputs",
+       "results_n_10000_p_160.rds")
+)
+
+
+for (c_level in CORR_LEVELS){
+  for (sn_level in SN_LEVELS){
+    #cat(sprintf("corr_level: %s, sn_level: %s\n", c_level, sn_level))
+    
+    xtable_obj = xtable(
+                    summary(results_n_2000_p_160[[c_level]][[sn_level]]$mod),
+                    digits=c(0,9,9,9,9),
+                    caption=sprintf("$Corr(X1,X2)=%s$, SNR=%s", c_level, sn_level)
+        )
+    
+    print(xtable_obj, type='latex', table.placement="H")
+
+    
+    #cat("--------------------------\n")
+    
+  }
+}
+
+```
+
+

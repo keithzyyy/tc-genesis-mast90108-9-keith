@@ -1,0 +1,192 @@
+---
+title: "analyze_results_n_10000_p_160"
+author: "Keith Howen"
+date: "2025-08-28"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("cowplot")
+#library(cowplot)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+
+#install.packages("glmnet")
+library(glmnet)
+
+```
+
+# Read stuff
+
+```{r}
+list.files(here("output", "simulation_factorial_analysis_n_10000_p_160_outputs"))
+```
+
+
+## Read synthetic datasets & mcmc samples
+```{r}
+
+res = readRDS(here("output", "simulation_factorial_analysis_n_10000_p_160_outputs", "results_n_10000_p_160.rds"))[["0.9"]][["moderate"]]
+
+X = res$X.syn
+y = res$y.syn
+
+
+mcmc.samples = readRDS(here("output", "simulation_factorial_analysis_n_10000_p_160_outputs", "gibbs_samples_n_10000_p_160.rds"))
+
+```
+
+
+# Plot
+
+## rel freq with ESS-adjusted CI
+```{r}
+inc_df <- inclusion_summary(mcmc.samples, top_k = 12, gt_idx = 1:4, ensure_gt = TRUE)
+plot_inclusion(inc_df,
+               title="Inclusion probabilities with ESS 95% CI\n(Highly Correlated GTs, Moderate SNR)")
+```
+
+
+## Trace of number of variables
+```{r}
+# high corr case number of variables in every sampled model
+plot_num_vars_trace(mcmc.samples,
+                    window = 50,
+                    title = "Trace: number of variables in every sampled model",
+                    dimension_BIC_minim = 3)
+```
+## Heatmap of model path
+
+```{r}
+plot_model_heatmap(mcmc.samples,
+                   thin = 10,
+                   order = "by_mean",
+                   exclude_unimportant_vars=152,
+                   put_gts_on_top=FALSE,
+                   title = "Model path heatmap (highly correlated GTs, moderate SNR)")
+```
+
+
+# LASSO comparison
+```{r}
+lasso.variable.selection = function(X, y,
+                                    how='lambda.1se'){
+  
+  # default is LASSO regression (alpha=1), so we good here
+  lasso.fit = glmnet(X, y, family = "binomial")
+  
+  # note best lambda is not chosen yet -- one way is via cross validation.
+  cvfit = cv.glmnet(X, y)
+  
+  # now, get model coefficients at that value of lambda
+  coefs.best.lambda = coef(cvfit, s=how)
+  
+  # extract non-zero coefficients
+  
+  vars.non.zero.coefs = names(
+      coefs.best.lambda[,how][
+        coefs.best.lambda[,how] != 0
+        ]
+    )
+    
+
+  coefs.best.lambda.nonzero =
+    coefs.best.lambda[vars.non.zero.coefs, ]
+  
+  # return everything!
+  return(
+    list(
+      lasso.fit=lasso.fit,
+      cvfit=cvfit,
+      coefs.best.lambda.nonzero=coefs.best.lambda.nonzero
+    )
+  )
+  
+}
+```
+
+
+
+```{r}
+lasso = lasso.variable.selection(X, y)
+lasso$coefs.best.lambda.nonzero
+```
+
+
+```{r}
+lasso.variable.selection(X, y, how='lambda.min')$coefs.best.lambda.nonzero
+```
+
+
+
+```{r}
+dim(X)
+
+
+summary(
+  glm(y ~ X1+X2+X3+X4, data=data.frame(X,y), family='binomial')
+)
+
+anova(glm(y ~ X1+X3+X4, data=data.frame(X,y), family='binomial'),
+      glm(y ~ X1+X2+X3+X4, data=data.frame(X,y), family='binomial'))
+
+
+```
+
+
+
+
+

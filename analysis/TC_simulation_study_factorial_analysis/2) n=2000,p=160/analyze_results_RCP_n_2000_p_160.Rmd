@@ -1,0 +1,595 @@
+---
+title: "analyze_results_RCP_n_2000_p_160"
+author: "Keith Howen"
+date: "2025-07-26"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+
+#install.packages("glmnet")
+library(glmnet)
+
+```
+
+# Read stuff
+
+## Read synthetic datasets
+
+```{r}
+results_n_2000_p_160 = readRDS(
+  here("output",
+       "simulation_factorial_analysis_n_2000_p_160_outputs",
+       "results_n_2000_p_160.rds"))
+
+X.no.corr = results_n_2000_p_160[['0']][['moderate']]$X.syn
+y.no.corr = results_n_2000_p_160[['0']][['moderate']]$y.syn
+
+X.high.corr = results_n_2000_p_160[['0.9']][['moderate']]$X.syn
+y.high.corr = results_n_2000_p_160[['0.9']][['moderate']]$y.syn
+```
+
+
+## Simulation results from RCP
+
+```{r}
+
+
+RCP_OUTPUT_FILEPATH = here("output",
+                           "simulation_factorial_analysis_n_2000_p_160_outputs",
+                           "RCP outputs (more chains)")
+
+RCP_OUTPUT_FILEPATH = file.path(RCP_OUTPUT_FILEPATH)
+
+list.files(RCP_OUTPUT_FILEPATH)
+
+RCP_OUTPUT_METADATA_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                         "metadata.rds")
+
+RCP_OUTPUT_NO_CORR_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                        "gibbs_3chains_results_no_corr.rds")
+
+RCP_OUTPUT_HIGH_CORR_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                          "gibbs_3chains_results_high_corr.rds")
+
+# to access a file, we can do say
+# readRDS(RCP_OUTPUT_METADATA_FILEPATH)
+```
+## metadata for the previous RCP run
+
+```{r}
+readRDS(RCP_OUTPUT_METADATA_FILEPATH)
+```
+
+
+## MCMC samples
+
+```{r}
+names(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH))
+
+print("No correlation metadata")
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3)
+
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time1)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time2)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time3)
+
+
+print("High correlation metadata")
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3)
+
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time1)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time2)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time3)
+
+# read samples
+
+samples.1.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1
+samples.2.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2
+samples.3.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3
+
+
+samples.1.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1
+samples.2.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2
+samples.3.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3
+
+
+```
+
+
+# Analyze moderate s/n, no corr
+
+## Relative frequency 
+
+```{r}
+
+samples.1.rel.freq = rel.freq.inference(samples.1.no.corr, CUTOFF=0.5)
+sort(samples.1.rel.freq$rel.freqs.non.basin, decreasing=TRUE)
+samples.1.rel.freq$selected.variables
+
+```
+## BIC Minimizer ("X1" "X2" "X3" "X5")
+
+```{r}
+BIC.minimizer.no.corr.1 =  suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.no.corr, y.no.corr)), samples.1.no.corr)
+  )
+```
+
+
+
+#### Compare to BIC of true model.
+
+```{r}
+compute.BIC(
+  data.frame(cbind(X.no.corr, y.no.corr)),
+  as.integer(colnames(X.no.corr) %in% c("X1","X2","X3","X4"))
+)
+```
+
+
+
+## Empirical mode ("X1"  "X2"  "X3"  "X5"  "X94")
+
+```{r}
+colnames(X.no.corr)[
+  as.logical(find_MAP(samples.1.no.corr))
+]
+```
+
+
+# Analyze moderate s/n, high corr
+
+## Relative frequency
+```{r}
+sort(
+  rel.freq.inference(samples.1.high.corr, CUTOFF=0.5)$rel.freqs.non.basin,
+  decreasing=TRUE
+)
+
+
+```
+
+## BIC minimizer ("X1"   "X2"   "X3"   "X4"   "X105")
+
+```{r}
+suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.high.corr, y.high.corr)), samples.1.high.corr)
+  )
+```
+#### Compare to BIC of true model.
+
+```{r}
+compute.BIC(
+  data.frame(cbind(X.high.corr, y.high.corr)),
+  as.integer(colnames(X.high.corr) %in% c("X1","X2","X3","X4"))
+)
+```
+
+
+## Empirical mode ("X1"   "X3"   "X105" "X142" "X146")
+
+```{r}
+colnames(X.high.corr)[
+  as.logical(find_MAP(samples.1.high.corr))
+]
+```
+
+## P-chart
+```{r}
+p_chart_slowest_converging_vars(samples.1.high.corr,
+                                metric = "D")
+```
+
+
+```{r}
+p_chart_slowest_converging_vars(samples.1.high.corr,
+                                metric = "M")
+```
+
+
+```{r}
+p_chart_slowest_converging_vars(samples.1.high.corr,
+                                metric = "MCSE")
+```
+
+# Hauck-Donner effect check
+
+## Check distribution of true probabiilties
+
+
+```{r}
+names(results_n_2000_p_160[['0']][['moderate']])
+```
+```{r}
+
+true_prob_dist = function(X,
+                          beta,
+                          title="Distribution of True Probabilities"){
+  # Suppose you have
+  X_true = as.matrix(X[,1:length(beta)])
+  probs <- plogis(as.matrix(X_true) %*% beta)
+  hist(probs, breaks = 30,
+       main = title, xlab = "p_i = sigmoid(X beta_true)")
+  abline(v = c(0.1, 0.9), col = "red", lty = 2) # Danger zone boundaries
+}
+
+true_prob_dist(results_n_2000_p_160[['0']][['moderate']]$X.syn,
+               results_n_2000_p_160[['0']][['moderate']]$beta)
+
+```
+## Check distribution of fitted probabilities in the fitted most efficient model
+
+
+Most efficient model: model that only contains X1,..,X4, the ground truths.
+
+```{r}
+hist(results_n_2000_p_160[['0']][['moderate']]$mod$fitted.values)
+```
+
+# Curious: using glmnet() LASSO on both datasets.
+
+## Function
+
+```{r}
+
+lasso.variable.selection = function(X, y,
+                                    how='lambda.1se'){
+  
+  # default is LASSO regression (alpha=1), so we good here
+  lasso.fit = glmnet(X, y, family = "binomial")
+  
+  # note best lambda is not chosen yet -- one way is via cross validation.
+  cvfit = cv.glmnet(X, y)
+  
+  # now, get model coefficients at that value of lambda
+  coefs.best.lambda = coef(cvfit, s=how)
+  
+  # extract non-zero coefficients
+  
+  vars.non.zero.coefs = names(
+      coefs.best.lambda[,how][
+        coefs.best.lambda[,how] != 0
+        ]
+    )
+    
+
+  coefs.best.lambda.nonzero =
+    coefs.best.lambda[vars.non.zero.coefs, ]
+  
+  # return everything!
+  return(
+    list(
+      lasso.fit=lasso.fit,
+      cvfit=cvfit,
+      coefs.best.lambda.nonzero=coefs.best.lambda.nonzero
+    )
+  )
+  
+}
+
+```
+
+
+## Moderate s/n, no corr
+
+```{r}
+# default is LASSO regression. 
+lasso.no.corr = lasso.variable.selection(X.no.corr, y.no.corr)
+lasso.no.corr$coefs.best.lambda.nonzero
+```
+
+
+```{r}
+lasso.variable.selection(X.no.corr,
+                         y.no.corr,
+                         how='lambda.min')$coefs.best.lambda.nonzero
+```
+
+
+
+## Moderate s/n, high corr
+
+```{r}
+# default is LASSO regression. 
+lasso.high.corr = lasso.variable.selection(X.high.corr, y.high.corr)
+lasso.high.corr$coefs.best.lambda.nonzero
+```
+```{r}
+lasso.variable.selection(X.high.corr,
+                         y.high.corr,
+                         how='lambda.min')$coefs.best.lambda.nonzero
+```
+
+
+
+## Generate latex code.
+```{r}
+lasso_latex_code_string <- function(coefs, caption = "", label = "") {
+  # Remove intercept (assumes it's the first element)
+  if("(Intercept)" %in% names(coefs)) coefs <- coefs[-1]
+  
+  df <- as.data.frame(t(coefs))
+  
+  colnames(df) <- names(coefs)
+  
+  latex_code <- knitr::kable(
+    df, format = "latex", booktabs = TRUE, digits = 4,
+    caption = caption, label = label
+  )
+  
+  paste(latex_code, collapse = "\n") # returns a string
+}
+
+# Example usage:
+latex_string_no_corr <- lasso_latex_code_string(
+  lasso.no.corr$coefs.best.lambda.nonzero,
+  caption = "LASSO (corr=0)",
+  label = "tab:lasso_no_corr"
+)
+
+cat(latex_string_no_corr)
+
+latex_string_high_corr <- lasso_latex_code_string(
+  lasso.high.corr$coefs.best.lambda.nonzero,
+  caption = "LASSO (corr=0.9)",
+  label = "tab:lasso_high_corr"
+)
+
+cat(latex_string_high_corr)
+
+
+```
+
+
+# ⚠ Convergence checks, pool samples if possible
+
+```{r}
+
+dim(
+  rbind(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1,
+      readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2,
+      readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3)
+)
+
+```
+
+
+## Find BIC minimizer for no corr (by pooling)
+
+```{r}
+suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.no.corr, y.no.corr)),
+                       rbind(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1,
+      readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2,
+      readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3))
+  )
+```
+
+
+## Find BIC minimizer for high corr (by pooling)
+
+```{r}
+suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.high.corr, y.high.corr)),
+                       rbind(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1,
+      readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2,
+      readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3))
+  )
+```
+
+## Empirical mode for no corr (by pooling)
+
+```{r}
+colnames(X.no.corr)[
+  as.logical(
+    find_MAP(
+      rbind(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1,
+        readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2,
+        readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3)
+    )
+  )
+]
+```
+
+
+
+## Empirical mode for high corr (by pooling)
+
+```{r}
+colnames(X.high.corr)[
+  as.logical(
+    find_MAP(
+      rbind(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1,
+        readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2,
+        readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3)
+    )
+  )
+]
+```
+
+
+# Dimension of models explored overtime
+```{r}
+
+summary(
+  apply(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1, 1, sum) / 160
+)
+
+
+summary(
+  apply(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2, 1, sum) / 160
+)
+
+summary(
+  apply(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3, 1, sum) / 160
+)
+
+```
+
+```{r}
+
+summary(
+  apply(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1, 1, sum) / 160
+)
+
+
+summary(
+  apply(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2, 1, sum) / 160
+)
+
+summary(
+  apply(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3, 1, sum) / 160
+)
+
+```
+
+
+# Format to latex renderable code.
+
+```{r}
+mcmc.samples.RCP = list()
+
+mcmc.samples.RCP[['0']] = list()
+mcmc.samples.RCP[['0']][['moderate']] = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1
+
+
+mcmc.samples.RCP[['0.9']] = list()
+mcmc.samples.RCP[['0.9']][['moderate']] = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1
+
+
+```
+
+
+```{r}
+summary_table_RCP <- make_summary_from_mcmc_samples(
+  mcmc.samples.RCP,
+  ground_truth_vars = paste0("X", 1:4),
+  results_n_2000_p_160)
+```
+
+
+```{r}
+summary_table_RCP
+```
+
+
+```{r}
+format_sim_study_tables(summary_table_RCP)
+```
+
+# Run a SECOND random search based on BIC minimizer.
+
+## No correlation
+```{r}
+
+model.1strun.no.corr = c("X1","X2","X3","X5")
+v0.run2.no.corr = rep(1, length(model.1strun.no.corr))
+
+samples.2ndrun.1.no.corr = suppressWarnings(
+        Gibbs.random.search(v0.run2.no.corr,
+                            data.frame(X.no.corr[,model.1strun.no.corr],
+                                       y.no.corr),
+                            burnin=300,
+                            iter=2300,
+                            penalty='BIC')
+      )
+
+suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.no.corr[,model.1strun.no.corr], y.no.corr)),
+                     samples.2ndrun.1.no.corr)
+)
+
+
+rel.freq.inference(samples.2ndrun.1.no.corr, CUTOFF=0.5)
+
+
+```
+
+
+
+
+## High correlation
+```{r}
+
+model.1strun.high.corr = c("X1","X2","X3","X4","X105")
+v0.run2.high.corr = rep(1, length(model.1strun.high.corr))
+
+samples.2ndrun.1.high.corr = suppressWarnings(
+        Gibbs.random.search(v0.run2.high.corr,
+                            data.frame(X.high.corr[,model.1strun.high.corr],
+                                       y.high.corr),
+                            burnin=300,
+                            iter=2300,
+                            penalty='BIC')
+      )
+
+suppressWarnings(
+  find_BIC_minimizer(data.frame(cbind(X.high.corr[,model.1strun.high.corr],
+                                      y.high.corr)),
+                     samples.2ndrun.1.high.corr)
+)
+
+rel.freq.inference(samples.2ndrun.1.high.corr, CUTOFF=0.5)
+
+
+```
+

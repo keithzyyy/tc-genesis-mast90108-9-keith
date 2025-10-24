@@ -1,0 +1,155 @@
+---
+title: "rerun_MH_disjoint_pressure_levels"
+author: "Keith Howen"
+date: "2025-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+## Check working directory
+```{r}
+library(here)
+here()
+```
+
+# Import all libraries (incl. custom)
+
+```{r}
+
+source(here("lib", "load_and_preprocess_TC.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+#library(mvtnorm)
+#library(truncnorm)
+#library(Matrix)
+library(ggplot2)
+#library(splitstackshape)
+#install.packages('reshape2')
+library(reshape2)
+library(glmnet)
+#install.packages('caret')
+library(caret)
+
+
+# for HL test
+#install.packages('glmtoolbox')
+library(glmtoolbox)
+
+#install.packages('PRROC')
+library(PRROC)
+
+library(cowplot)
+
+library(diptest)
+
+library(purrr)
+
+
+library(kableExtra)
+
+#install.packages("xtable")
+library(xtable)
+
+library(glmnet)
+
+
+#install.packages("ResourceSelection")
+library(ResourceSelection)  # for hoslem.test
+
+library(glmtoolbox)
+
+library(predtools)
+library(magrittr)
+
+
+library(energy)
+
+library(posterior)
+
+library(stringr)
+
+library(precrec)
+
+
+
+```
+
+```{r}
+colnames(X)
+```
+
+The only overlapping categories are `vertical_wind_shear_between_*_hPa_and_*_hPa`.
+Consider obtaining DISJOINT categories
+
+```{r}
+
+
+verical_wind_shear_disjoint_pressures = c("vertical_wind_shear_between_200_hPa_and_300_hPa",
+  "vertical_wind_shear_between_300_hPa_and_400_hPa",
+  "vertical_wind_shear_between_400_hPa_and_500_hPa",
+  "vertical_wind_shear_between_500_hPa_and_600_hPa",
+  "vertical_wind_shear_between_600_hPa_and_700_hPa",
+  "vertical_wind_shear_between_700_hPa_and_850_hPa",
+  "vertical_wind_shear_between_850_hPa_and_925_hPa",
+  "vertical_wind_shear_between_925_hPa_and_1000_hPa" 
+)
+
+single_field_vars = c("geopotential",
+                      "temperature",
+                      "specific_humidity",
+                      "vertical_velocity",
+                      "vorticity_relative",
+                      "divergence",
+                      "wind_u",
+                      "wind_v",
+                      "relative_humidity",
+                      "potential_vorticity" )
+
+#full_vars_w_disjoint_shears = c(colnames(X)[
+#                  !grepl("vertical_wind_shear", colnames(X)) &
+#                  !colnames(X) %in% single_field_vars],
+#                                verical_wind_shear_disjoint_pressures)
+
+full_vars_w_disjoint_shears = colnames(X)[
+                  !colnames(X) %in% single_field_vars]
+
+
+```
+
+# First run
+
+```{r}
+MH.on.full.vars.w.disjoint.shears = MH.random.search(
+  v0=rep(1,length(full_vars_w_disjoint_shears)),
+  data=data.frame(X[,full_vars_w_disjoint_shears], y),
+  lambda=0.85,
+  iter=8200,
+  debug=TRUE
+)
+```
+
+
+# Second run
+
+```{r}
+MH.on.full.vars.w.disjoint.shears.run.2 = MH.random.search(
+  v0=tail(MH.on.full.vars.w.disjoint.shears$samples, n=1),
+  data=data.frame(X[,full_vars_w_disjoint_shears], y),
+  lambda=0.9,
+  iter=8200,
+  debug=TRUE,
+  burnin=0
+)
+```
+
+
+
+```{r}
+melt(cor(X[,full_vars_w_disjoint_shears])) %>%
+  filter(value < 1) %>%
+  arrange(desc(value))
+```
+

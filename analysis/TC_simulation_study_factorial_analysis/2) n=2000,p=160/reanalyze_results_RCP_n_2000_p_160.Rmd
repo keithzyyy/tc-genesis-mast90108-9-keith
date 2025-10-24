@@ -1,0 +1,493 @@
+---
+title: "reanalyze_results_RCP_n_2000_p_160"
+author: "Keith Howen"
+date: "2025-08-25"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("cowplot")
+#library(cowplot)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+
+#install.packages("glmnet")
+library(glmnet)
+
+```
+
+# Read stuff
+
+## Read synthetic datasets
+
+```{r}
+results_n_2000_p_160 = readRDS(
+  here("output",
+       "simulation_factorial_analysis_n_2000_p_160_outputs",
+       "results_n_2000_p_160.rds"))
+
+X.no.corr = results_n_2000_p_160[['0']][['moderate']]$X.syn
+y.no.corr = results_n_2000_p_160[['0']][['moderate']]$y.syn
+
+X.high.corr = results_n_2000_p_160[['0.9']][['moderate']]$X.syn
+y.high.corr = results_n_2000_p_160[['0.9']][['moderate']]$y.syn
+```
+
+
+## Simulation results from RCP
+
+```{r}
+
+
+RCP_OUTPUT_FILEPATH = here("output",
+                           "simulation_factorial_analysis_n_2000_p_160_outputs",
+                           "RCP outputs (more chains)")
+
+RCP_OUTPUT_FILEPATH = file.path(RCP_OUTPUT_FILEPATH)
+
+list.files(RCP_OUTPUT_FILEPATH)
+
+RCP_OUTPUT_METADATA_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                         "metadata.rds")
+
+RCP_OUTPUT_NO_CORR_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                        "gibbs_3chains_results_no_corr.rds")
+
+RCP_OUTPUT_HIGH_CORR_FILEPATH = file.path(RCP_OUTPUT_FILEPATH,
+                                          "gibbs_3chains_results_high_corr.rds")
+
+# to access a file, we can do say
+# readRDS(RCP_OUTPUT_METADATA_FILEPATH)
+```
+## metadata for the previous RCP run
+
+```{r}
+readRDS(RCP_OUTPUT_METADATA_FILEPATH)
+```
+
+
+## MCMC samples
+
+```{r}
+names(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH))
+
+print("No correlation metadata")
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3)
+
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time1)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time2)
+dim(readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$time3)
+
+
+print("High correlation metadata")
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3)
+
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time1)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time2)
+dim(readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$time3)
+
+# read samples
+
+samples.1.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init1
+samples.2.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init2
+samples.3.no.corr = readRDS(RCP_OUTPUT_NO_CORR_FILEPATH)$init3
+
+
+samples.1.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init1
+samples.2.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init2
+samples.3.high.corr = readRDS(RCP_OUTPUT_HIGH_CORR_FILEPATH)$init3
+
+
+```
+
+# (plot) Heatmap of model inclusion
+
+
+```{r}
+
+# 3) Heatmap of model picks (thin if very long)
+plot_grid(
+  
+  
+  plot_model_heatmap(samples.1.no.corr,
+                   thin = 10,
+                   order = "by_mean",
+                   exclude_unimportant_vars=155,
+                   put_gts_on_top=FALSE,
+                   title = "Model path heatmap (uncorrelated GTs)"),
+  
+  plot_model_heatmap(samples.1.high.corr,
+                   thin = 10,
+                   order = "by_mean",
+                   exclude_unimportant_vars=152,
+                   put_gts_on_top=FALSE,
+                   title = "Model path heatmap (highly correlated GTs)"), 
+  
+  
+  nrow=2
+  
+)
+
+
+
+
+
+```
+
+
+# (plot) Trace of number of variables in the sampled models
+
+HORIXONTAL LINE: NUMBER OF VARIABLES IN BIC MINIMIZER
+
+
+```{r}
+# high corr case number of variables in every sampled model
+plot_num_vars_trace(samples.1.no.corr,
+                    window = 50,
+                    title = "Trace: number of variables in every sampled model",
+                    dimension_BIC_minim = 4)
+```
+
+```{r}
+# high corr case number of variables in every sampled model
+plot_num_vars_trace(samples.1.high.corr,
+                    window = 50,
+                    title = "Trace: number of variables in every sampled model")
+```
+
+# (plot) CI for rel freqs
+
+
+```{r}
+# 1) Inclusion summary
+inc_df <- inclusion_summary(samples.1.high.corr, top_k = 12, gt_idx = gt_idx, ensure_gt = TRUE)
+plot_inclusion(inc_df)
+```
+```{r}
+# 1) Inclusion summary
+inc_df <- inclusion_summary(samples.1.no.corr, top_k = 12, gt_idx = gt_idx, ensure_gt = TRUE)
+plot_inclusion(inc_df)
+```
+
+
+
+# Spurious ass. for X105, X110, X116
+
+```{r}
+
+inv_spurious_vars = function(X, y, suspect=c("X105", "X116", "X110", "X157")){
+  true_vars <- c("X1","X3","X2","X4")  
+
+  df <- data.frame(X, y)
+  f_true   <- as.formula(paste("y ~", paste(true_vars, collapse = " + ")))
+  f_aug    <- as.formula(paste("y ~", paste(c(true_vars, suspect), collapse = " + ")))
+  
+  m_true <- glm(f_true, df, family = binomial())
+  m_aug  <- glm(f_aug , df, family = binomial())
+  
+  print( summary(m_true) )
+  print( summary(m_aug) )
+  
+  # p-value for X105 | GTs
+  print(
+    anova(m_true, m_aug, test = "LRT") 
+  )
+         
+  
+  # ΔBIC (>0 favors aug model)
+  BIC(m_true) - BIC(m_aug)                  
+  
+}
+
+inv_spurious_vars(X.high.corr, y.high.corr)
+
+```
+
+## Hmm.. regenerate datasets?
+
+Ok this time X1,X2,X3,X4,X105 have lower BIC than X1,..,X4. 
+IS THIS BY CHANCE? Likely so!
+
+```{r}
+
+# Optional helper: EBIC difference when adding exactly 1 variable
+# Uses lchoose to avoid overflow: ΔEBIC = ΔBIC + 2γ[logC(p,k_true) - logC(p,k_true+1)]
+.ebic_delta_1 <- function(dBIC, p, k_true, gamma = 0.5){
+  dBIC + 2*gamma*(lchoose(p, k_true) - lchoose(p, k_true + 1L))
+}
+
+check_spurious_LR_BIC <- function(beta_gt= c(3, 0.37, -3, -0.25), X,
+                                  suspect = c("X105", "X110", "X116", "157"),
+                                  nrep = 100, seed_offset = 1,
+                                  alpha = 0.05, compute_ebic = TRUE, gamma = 0.5) {
+  # beta_gt: numeric vector of true betas for GT vars (no intercept)
+  # X      : design matrix with named columns ("X1","X2",...)
+  # suspect: variable name to test (e.g., "X105")
+  # nrep   : number of simulated response sets
+  # alpha  : LR test level for significance flag
+  # compute_ebic/gamma: also compute ΔEBIC with parameter gamma
+
+  stopifnot(is.matrix(X) || is.data.frame(X))
+  gt_vars <- paste0("X", seq_along(beta_gt))
+  p_total <- ncol(X)
+  k_true  <- length(gt_vars)
+
+  res <- vector("list", nrep)
+
+  for (i in 1:nrep) {
+    regen <- check_significance(beta_gt, X, SEED = seed_offset + i)
+    df <- data.frame(regen$X.syn, y = regen$y.syn)
+
+    f_true <- as.formula(paste("y ~", paste(gt_vars, collapse = " + ")))
+    f_aug  <- as.formula(paste("y ~", paste(c(gt_vars, suspect), collapse = " + ")))
+
+    m_true <- glm(f_true, df, family = binomial())
+    m_aug  <- glm(f_aug , df, family = binomial())
+
+    a <- anova(m_true, m_aug, test = "LRT")
+    ddev <- as.numeric(a$Deviance[2L])
+    pval <- as.numeric(a$`Pr(>Chi)`[2L])
+
+    dBIC <- BIC(m_true) - BIC(m_aug)       # >0 favors augmented model
+    if (compute_ebic) {
+      dEBIC <- .ebic_delta_1(dBIC, p = p_total, k_true = k_true, gamma = gamma)
+    } else {
+      dEBIC <- NA_real_
+    }
+
+    res[[i]] <- data.frame(
+      rep = i,
+      dDeviance = ddev,
+      pval = pval,
+      dBIC = dBIC,
+      dEBIC = dEBIC,
+      lr_sig = (pval < alpha),
+      bic_favors = (dBIC > 0),
+      ebic_favors = if (compute_ebic) (dEBIC > 0) else NA
+    )
+  }
+
+  out <- do.call(rbind, res)
+  rownames(out) <- NULL
+  out
+}
+
+
+res <- check_spurious_LR_BIC(
+  X = X.high.corr,
+  suspect = "X105",
+  nrep = 500,
+  compute_ebic = TRUE, gamma = 0.5
+)
+
+# Quick summaries
+mean(res$lr_sig)          # empirical Type I error (LR @ alpha)
+mean(res$bic_favors)      # P(ΔBIC > 0)
+mean(res$ebic_favors, na.rm = TRUE)  # P(ΔEBIC > 0), if computed
+summary(res$dDeviance); summary(res$dBIC); summary(res$dEBIC)
+
+
+hist(res$dBIC)
+```
+
+```{r}
+# Histogram with color-coded bins
+h <- hist(res$dBIC, breaks = 30, plot = FALSE)
+
+cols <- ifelse(h$mids < 0, "darkseagreen3", "indianred2")
+
+plot(h, col = cols, border = "white",
+     main = "ΔBIC: True model vs True + X105",
+     xlab = "ΔBIC (BIC_true - BIC_augmented)")
+
+abline(v = 0, lty = 2, col = "black")
+legend("topright", fill = c("darkseagreen3", "indianred2"),
+       legend = c("ΔBIC < 0 → True model favored",
+                  "ΔBIC > 0 → True model + X105 favored"),
+       border = NA)
+
+```
+
+
+
+# ✓ Output top 5 BIC minimizers
+
+## no corr case
+
+```{r}
+BIC_minim_no_corr = find_BIC_minimizer(data.frame(X.no.corr, y.no.corr),
+                   samples.1.no.corr)
+
+BIC_minim_no_corr[["models_by_bic"]][["1"]]
+BIC_minim_no_corr[["models_by_bic"]][["2"]]
+BIC_minim_no_corr[["models_by_bic"]][["3"]]
+BIC_minim_no_corr[["models_by_bic"]][["4"]]
+BIC_minim_no_corr[["models_by_bic"]][["5"]]
+
+```
+
+## high corr case
+
+```{r}
+BIC_minim_high_corr = find_BIC_minimizer(data.frame(X.high.corr, y.high.corr),
+                   samples.1.high.corr)
+
+BIC_minim_high_corr[["models_by_bic"]][["1"]]
+BIC_minim_high_corr[["models_by_bic"]][["2"]]
+BIC_minim_high_corr[["models_by_bic"]][["3"]]
+BIC_minim_high_corr[["models_by_bic"]][["4"]]
+BIC_minim_high_corr[["models_by_bic"]][["5"]]
+
+```
+
+
+```{r}
+
+compute.BIC(data.frame(X.high.corr, y.high.corr),
+            as.integer(colnames(X.high.corr) %in% c("X1","X2","X3","X4")))
+
+
+samples.1.high.corr[,]
+
+
+```
+
+
+
+
+
+
+# Read beta values
+
+```{r}
+
+names(
+  results_n_2000_p_160[['0']][['moderate']]
+  )
+
+
+```
+
+
+```{r}
+results_n_2000_p_160[['0']][['moderate']]$beta
+results_n_2000_p_160[['0.9']][['moderate']]$beta
+```
+How do we think we want to present it as a table in the appendix?
+
+
+# (plot) P-charts
+
+```{r}
+p_chart_slowest_converging_vars(samples.1.no.corr, "MCSE")
+```
+
+
+```{r}
+p_chart_slowest_converging_vars(samples.1.high.corr, "MCSE")
+```
+
+
+
+
+
+
+
+# Case-by-case investigation of spurious variables.
+
+What other variables were in the model where X105 = 1?
+
+```{r}
+
+other_variables_alongside_spurious_vars = function(samples, var="X105"){
+  
+  # obtain sampled models where var is in the models
+  samples.filtered = samples[samples[,"X105"] == 1, ]
+  
+  # obtain the exact variable sets
+  var.sets = apply(samples[samples[,"X105"] == 1, ],
+      1,
+      function(row) which(row != 0))
+  
+  return(
+    list(
+      samples.filtered = samples.filtered,
+      var.sets = var.sets
+    )
+  )
+  
+}
+
+
+
+other_variables_alongside_spurious_vars(samples.1.high.corr)
+
+
+
+
+
+
+
+
+
+```
+
+
+

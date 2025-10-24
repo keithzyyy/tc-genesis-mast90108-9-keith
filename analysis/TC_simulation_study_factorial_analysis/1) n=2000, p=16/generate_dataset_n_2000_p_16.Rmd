@@ -1,0 +1,1111 @@
+---
+title: "TC_sim_factorial_analysis_generate_data"
+author: "Keith Howen"
+date: "2025-05-29"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+source(here("lib", "preprocessing_v2.R"))
+
+source(here("lib", "probit_gibbs.R"))
+source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+#library(splitstackshape)
+```
+
+## Set path for data
+
+```{r}
+list.files(here("data"))
+```
+
+```{r}
+data_path = here("data", "envDataset_12h_10x10_with_mask.csv")
+```
+
+# 💻 Import & fix NA basin value
+
+```{r}
+# import the data
+data = read.csv(data_path)
+
+# fix basin NA category first (NA missing to "NA") and
+# convert it into a factor
+# (but not yet encoded yet)
+data.NA.fixed = fix_NA_value_and_refactor_basin(data)
+```
+
+# Import sampled data
+
+```{r}
+
+X.sim.balanced.class <- readRDS(here("output", "simulation_v2_outputs", "X.sim.balanced.class.rds"))
+
+covariates.mwr.final.mod <- readRDS(here("output", "simulation_v2_outputs", "covariates.mwr.final.mod.rds"))
+COVARIATES.TABLE4 = readRDS(here("output", "simulation_v2_outputs", "COVARIATES.TABLE4.rds"))
+
+y.sim <- readRDS(here("output", "simulation_v2_outputs", "y.sim.rds"))
+
+X.sim.table4.vars = X.sim.balanced.class[,COVARIATES.TABLE4]
+
+```
+
+# Fit 2000 rows first
+
+# 📕 Propose algorithm to tweak signal given correlation
+
+*Ground truth* covariates: covariates that were involved in generating
+the response.
+
+Obtain a synthetic dataset comprised of ground truth covariates (+
+redundant covariates) and synthetic responses in a way that **ALL ground
+truth covariates are significant**.
+
+Steps (for a **fixed** correlation structure between $X_1, \cdots, X_4$:
+
+0.  Set $t=0$, where $y^{(0)}$ corresponds to binary responses either
+    from the TC genesis data or used to fit a model to
+    $X_1, \cdots, X_4$.
+
+    For $t \ge 1$,
+
+1.  Fit a a model to the 2000 observations of $X_1, \cdots, X_4$ with
+    the responses $y^{(t-1)}$. Obtain estimates
+    $\hat{\beta_1}^{(t-1)},\hat{\beta_2}^{(t-1)},\hat{\beta_3}^{(t-1)},\hat{\beta_4}^{(t-1)}$
+    .
+
+2.  If any $\hat{\beta_i}^{(t-1)}$ not significant, scale
+    $\hat{\beta_i}^{(t)}=c_i \cdot \hat{\beta_i}^{(t-1)},\ |c_i|>1$ to
+    **increase their magnitude (hoping to make them significant
+    enough)**.
+
+    -   Otherwise stop and return
+        $\hat{\beta_1}^{(t-1)},\hat{\beta_2}^{(t-1)},\hat{\beta_3}^{(t-1)},\hat{\beta_4}^{(t-1)}$
+        as well as $y^{(t-1)}$.
+
+3.  Generate another set of responses $y^{(t)}$ by
+    $Ber\left(\sigma(\sum_{i=1}^4\hat{\beta_i}^{(t)}X_i)\right)$
+
+4.  Loop to next iteration.
+
+Then include the rest of 12 variables as candidate variables in the
+variable selection process.
+
+# Obtain the original responses of the 2000 covariates
+
+```{r}
+table(data.NA.fixed[as.integer(rownames(X.sim.balanced.class)), ]$TC_genesis)
+```
+
+```{r}
+y.balanced.class = data.NA.fixed[as.integer(rownames(X.sim.balanced.class)), ]$TC_genesis
+```
+
+## Examine correlation structure
+
+Examine pairwise correlation coefficient in ground truth variables on
+the 2000 sampled covariates.
+
+```{r}
+cor(X.sim.balanced.class[,covariates.mwr.final.mod])[1:4,1:4]
+```
+
+## Reflection on previous wrong methodology
+
+Recall `potential_vorticity_at_600_hPa` and
+`vertical_wind_shear_between_200_hPa_and_700_hPa` are picked from the RS
+but not the other 2.
+
+Recall the significance of the ground truth variables w.r.t to the
+**simulated response**
+
+```{r}
+summary(
+  glm(y.sim ~ 0 + basinEP + basinNA + basinNI + basinSA +
+        basinSI + basinSP + basinWP + Coriolis_parameter + potential_vorticity_at_600_hPa +
+        vertical_wind_shear_between_200_hPa_and_700_hPa + vorticity_relative_at_925_hPa,
+    family=binomial,
+    data=data.frame(cbind(X.sim.table4.vars, y.sim)))
+)
+```
+
+`Coriolis_parameter` is relatively significant but does not get picked
+-- since it is highly correlated with `potential_vorticity_at_600_hPa`.
+
+Possible explanation: Once `potential_vorticity_at_600_hPa` is in the
+model, adding `Coriolis_parameter` won’t substantially improve the fit.
+
+But in terms of `vorticity_relative_at_925_hPa` it is *just* because its
+not significant.
+
+Hence why the 2 factors determining variable selection performance is
+collinearity AND significance.
+
+# PREFACE ON SYNTHETIC COVARIATE GENERATION
+
+Since we are not inferring the distirbution of covariates (in linear
+models they are assumed to be fixed), we can use any method to generate
+covariates based on their correlation.
+
+-   After all, the thing that impacts variable selection is their
+    RELATIONSHIP to the response as well as their CORRELATION (since we
+    are using a linear model)
+
+# ✅Comb 1: rho=0, high s/n
+
+## Generate uncorrelated X1,..,X4 covariates with 12 redundants
+
+```{r}
+#mod.1 = glm(y.balanced.class ~ 0 + basinEP + basinNA + basinNI + basinSA +
+#        basinSI + basinSP + basinWP + Coriolis_parameter + potential_vorticity_at_600_hPa +
+#        vertical_wind_shear_between_200_hPa_and_700_hPa + vorticity_relative_at_925_hPa,
+#    family=binomial,
+#    data=data.frame(cbind(X.sim.balanced.class, y.balanced.class)))
+
+#summary(mod.1)
+```
+
+Idea: use 1 real covariate realization, and from there generate 3
+covariates such that they are mutually uncorrelated.
+
+-   NOPE. Its easier to generate synthetic covariates entirely to ensure
+    any form of mutual uncorrelation.
+
+### ✏️ Helper function
+
+NOTE: its on the `factorial_analysis_routines` module.
+
+```{r}
+
+set.seed(123)
+
+#resid_out <- function(x, ref) {
+#  return(lm(x ~ ref)$residuals)
+#}
+
+#gen_3_uncorr_vars = function(X_real) {
+#  
+#  SIZE = length(X_real)
+#  
+#  X_syn1 <- resid_out(rnorm(SIZE), X_real)
+#  X_syn2 <- resid_out(rnorm(SIZE), X_real)
+#  X_syn3 <- resid_out(rnorm(SIZE), X_real)
+#  
+#  # bunch them up into a n x 4 matrix
+#  mat = cbind(X_real, X_syn1, X_syn2, X_syn3)
+#  colnames(mat) = c("X1", "X2", "X3", "X4")
+#  
+#  return(mat)
+#}
+
+
+# generates MVNorm synthetic variables
+# given a covariance (or correlation) matrix r
+# NOTE: by convention, X1 to X4 are ground truths
+gen_synthetic_vars = function(r, SIZE=2000){
+  
+
+  # generates SIZE random vectors of dimension nrow(r) or ncol(r)
+  syn.vars <- mvrnorm(n=SIZE,
+                mu=rep(0, nrow(r)),
+                Sigma=r,
+                empirical=TRUE )
+  
+  # include an intercept column?
+  
+  # fix column names ("X0" = intercept)
+  varnames = 1:nrow(r)
+  varnames = sapply(varnames, FUN=function(i){paste("X",i,sep='')})
+  
+  
+  colnames(syn.vars) = varnames
+  
+  return(syn.vars)
+
+}
+
+
+
+```
+
+```{r}
+
+set.seed(123)
+
+NUM_GROUND_TRUTHS = 4
+NUM_REDUNDANT = 12
+
+r.c1 = diag(NUM_GROUND_TRUTHS + NUM_REDUNDANT)
+
+X.c1 = gen_synthetic_vars(r.c1)
+
+round(cor(X.c1)[1:NUM_GROUND_TRUTHS, 1:NUM_GROUND_TRUTHS], 10)
+
+```
+
+## Start tweaking beta values
+
+We might automate it in a function
+
+```{r}
+set.seed(123)
+# GOAL: generate dataset for combination 1 (c1)
+
+# 'guess' a beta value
+# perhaps have some variables with a mix of + and - strong signal?
+beta.c1 = c(3, 3.5, -3, -4.5)
+
+# generate responses based on the beta coefficients (all strong)
+X.true.c1 = X.c1[,1:NUM_GROUND_TRUTHS]
+eta.c1 = X.true.c1 %*% beta.c1
+p.c1 = 1 / (1 + exp(-eta.c1))
+y.c1 = rbinom(nrow(X.c1), size=1, prob=p.c1)
+
+
+# see how significant each variable is
+mod.c1 = glm(formula= y.c1 ~ .,
+    family='binomial',
+    data=data.frame(X.true.c1, y.c1))
+
+summary(mod.c1)
+
+```
+
+```{r}
+table(y.c1)
+```
+
+
+
+All the ground truth variables involved in generating the response are
+**highly significant**.
+
+Misc remarks - Estimates are fairly close, but not that close. This is
+most likely due to the inherent noise present in the fairly modest
+sample size, though I think 2000 is good enough for stable coefficient
+estimation.
+
+## Saving the dataset for combination 1
+
+```{r}
+
+# save the true beta coeffs used to generate the responses
+saveRDS(beta.c1,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "beta.c1.rds"))
+
+# save the synthetic response
+saveRDS(y.c1,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "y.c1.rds"))
+
+
+# save design matrix of candidate variables
+saveRDS(X.c1,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "X.c1.rds"))
+
+
+# save the true probabilities 
+saveRDS(p.c1,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "p.c1.rds"))
+
+```
+
+# ✏️ Automate significance checking in a function
+
+See `lib/factorial_analysis_routines.R`.
+
+# ✅Comb 2: rho=+0.5, high s/n
+
+4 ground truth variables, 2 of which are moderately correlated (ρ =
+0.5), and 12 redundant variables that are uncorrelated with all ground
+truths and each other.
+
+## 💡 TIP: construct block diagonal matrices using `Matrix.bdiag()`
+
+NOTE: you should have the `Matrix` library installed and imported first.
+
+## 💡 Math'al setup
+
+$$
+\text{Assume we have 4 ground truths and 12 redundant variables} \\
+\text{(redundant meaning NOT involved in generating the response)} \\
+\text{Let }\mathbf{x_{g1}}= \begin{bmatrix} X_1 \\ X_2  \end{bmatrix},
+\text{ ground truths with controlled correlation} \\
+\text{Let }\mathbf{x_{g2}}= \begin{bmatrix} X_3 \\ X_4  \end{bmatrix},
+\text{ uncorrelated ground truths}\\
+\text{Let }\mathbf{x_{r}}= \begin{bmatrix} X_5 \\ \cdots \\ X_{16}  \end{bmatrix},
+\text{ the redundant variables} \\
+\Sigma = \begin{bmatrix}
+\mathbf{Var(x_{g1})} = \begin{bmatrix} 1 && \rho \\ \rho && 1  \end{bmatrix}  && \mathbf{O} && \mathbf{O} \\ 
+\mathbf{O} && \mathbf{Var(x_{g1})}=I_2 && \mathbf{O} \\
+\mathbf{O} && \mathbf{O} && \mathbf{Var(x_{r})}=I_{12} \\
+\end{bmatrix} \\
+\text{NOTE: for now set variables to have unit variance for simplicity,} \\ 
+\text{and set the redundant variables to be uncorrelated with e.o. and the ground truths}
+$$
+
+## Generate the data
+
+```{r}
+
+
+r.c2 = as.matrix(
+  bdiag( # Ensuring that (X1,X2), (X3,X4) and (X5,..,X16) are mutually uncorrelated.
+    matrix(c(1, 0.5, 0.5, 1),c(2,2)), # Block 1: 2 correlated ground truths (ρ = 0.5)
+    diag(2), # Block 2: 2 uncorrelated ground truths
+    diag(12) # Block 3: 12 uncorrelated redundant variables
+  )
+)
+
+X.c2 = generate_synthetic_vars(r.c2,SIZE=2000)
+
+head(X.c2)
+
+round(
+  cor(X.c2),
+  10
+)
+```
+
+## Start tweaking beta values
+
+```{r}
+
+result.c2 = check_significance(c(3, 3.5, -3, -4.5), X.c2)
+
+```
+
+```{r}
+
+cat("Distribution of synthetic response below:")
+print(table(result.c2$y.syn))
+
+#cat("\nCoefficient estimates, p-values, and significance of each ground truth variable below:")
+#print(result.c2$sig)
+
+#hist(
+#  1 / (1 + exp(-result.c2$X.syn[,1:4] %*% result.c2$beta))
+#)
+
+```
+
+## Saving the results for combination 2
+
+```{r}
+names(result.c2)
+```
+
+
+
+```{r}
+# save the results for simulation scenario 2 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c2,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c2.rds"))
+```
+
+
+
+# ✅ Comb 3: rho=+0.9, high s/n
+
+4 ground truth variables, 2 of which are highly correlated (ρ = 0.9),
+and 12 redundant variables that are uncorrelated with all ground truths
+and each other.
+
+## Generate the data
+
+```{r}
+r.c3 = as.matrix(
+  bdiag( # Ensuring that (X1,X2), (X3,X4) and (X5,..,X16) are mutually uncorrelated.
+    matrix(c(1, 0.9, 0.9, 1),c(2,2)), # Block 1: 2 correlated ground truths (ρ = 0.9)
+    diag(2), # Block 2: 2 uncorrelated ground truths
+    diag(12) # Block 3: 12 uncorrelated redundant variables
+  )
+)
+
+X.c3 = generate_synthetic_vars(r.c3,SIZE=2000)
+
+head(X.c3)
+
+round(
+  cor(X.c3),
+  10
+)
+
+```
+
+## Start tweaking beta values
+
+```{r}
+result.c3 = check_significance(c(3, 3.5, -3, -4.5), X.c3)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c3$y.syn))
+```
+
+
+Standard errors for X1 and X2 are larger (presumably due to the strong
+correlation between X1 and X2), and overall z-statistics decrease
+(though given the effect sizes, these are considered large since the
+p-values are still very small)
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario 3 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c3,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c3.rds"))
+```
+
+# ✅Comb 4: rho=-0.5, high s/n
+
+## Generate the data
+
+```{r}
+r.c4 = as.matrix(
+  bdiag( # Ensuring that (X1,X2), (X3,X4) and (X5,..,X16) are mutually uncorrelated.
+    matrix(c(1, -0.5, -0.5, 1),c(2,2)), # Block 1: 2 correlated ground truths (ρ = -0.5)
+    diag(2), # Block 2: 2 uncorrelated ground truths
+    diag(12) # Block 3: 12 uncorrelated redundant variables
+  )
+)
+
+X.c4 = generate_synthetic_vars(r.c4,SIZE=2000)
+
+head(X.c4)
+
+round(
+  cor(X.c4),
+  10
+)
+
+```
+
+## Start tweaking beta values
+
+(3,3.5,-3,-4.5) should be more than sufficient for a strong s/n, despite
+the -0.5 correlation coeff between X1 and X2
+
+```{r}
+result.c4 = check_significance(c(3, 3.5, -3, -4.5), X.c4)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c4$y.syn))
+```
+
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario 3 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c4,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c4.rds"))
+```
+
+
+
+# ✅Comb 5: rho=-0.9, high s/n
+
+## Generate the data
+
+```{r}
+r.c5 = as.matrix(
+  bdiag( # Ensuring that (X1,X2), (X3,X4) and (X5,..,X16) are mutually uncorrelated.
+    matrix(c(1, -0.9, -0.9, 1),c(2,2)), # Block 1: 2 correlated ground truths (ρ = -0.9)
+    diag(2), # Block 2: 2 uncorrelated ground truths
+    diag(12) # Block 3: 12 uncorrelated redundant variables
+  )
+)
+
+X.c5 = generate_synthetic_vars(r.c5,SIZE=2000)
+
+head(X.c5)
+
+round(
+  cor(X.c5),
+  10
+)
+
+```
+
+## Start tweaking beta values
+
+(3,3.5,-3,-4.5) should be more than sufficient for a strong s/n, despite
+the -0.9 correlation coeff between X1 and X2
+
+```{r}
+result.c5 = check_significance(c(3, 3.5, -3, -4.5), X.c5)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c5$y.syn))
+```
+
+
+
+```{r}
+# save the results for simulation scenario 3 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c5,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c5.rds"))
+```
+
+
+# 💡 DEFINING STRENGTH OF s/n
+
+(From the meeting) You have several choices to decide the extent of s/n:
+
+1.  Moderate
+
+-   Reduce **all 4** coefficients to have moderate signal, or
+-   Make 2 strong, 2 moderate (⚠️only problem for this is the
+    overshadowing phenomenon present in the previous incorrect sim
+    study-- or is this expected?)
+
+2.  Weak
+
+-   Do **NOT** reduce **all** of them to be weak
+-   Maybe make 1 or 2 of them to be weak.
+
+How about we define a rule of thumb: - Strong s/n = all are Strong -
+Moderate s/n = 2 Moderate, other 2 is Strong - Weak s/n = 2 weak, other
+2 is strong
+
+Strong, moderate, and weak defined here:
+
+$$
+\text{Strong }\texttt{(***): }0 < \text{p-value} \le 0.001 \\
+\text{Moderate }\texttt{(**): }0.001 < \text{p-value} \le 0.01 \\
+\text{Weak }\texttt{(*): }0.01 < \text{p-value} \le 0.05
+$$
+
+# ✅ Comb 6: rho=0, moderate s/n
+
+4 **uncorrelated** ground truth variables, and 12 redundant variables
+that are uncorrelated with all ground truths and each other.
+
+Also ONLY 2/4 ground truth variables have strong signals (i.e. not all
+magnitude of $\beta_j$s are large to be statistically significant)
+
+## Reuse Data From C1
+
+We can use the same dataset (mutually uncorrelated) from combination 1.
+
+```{r}
+X.c6 <- X.c1
+dim(X.c6)
+round(cor(X.c6), 10)
+```
+
+## Start tweaking beta values
+
+
+Last time (rho=0 and high s/n) we got $\beta = [3, 3.5, -3, -4.5]^T$
+
+Perhaps we can reduce the magnitudes of 2 directly
+
+$\beta = [3, \mathbf{1.5}, -3, \mathbf{-1.5}]^T$
+
+After some trial and error, we had to reduce the magnitudes to **below
+1**.
+
+```{r}
+result.c6 = check_significance(c(3, 0.35, -3, -0.18), X.c6)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c6$y.syn))
+```
+
+
+Here X1 and X3 strong, X2 and X4 moderate
+
+```{r}
+names(result.c6)
+result.c6$sig
+
+
+```
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario 6 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c6,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c6.rds"))
+```
+
+# ✅ Comb 7: rho=+0.5, moderate s/n
+
+## Reuse Data From C2
+
+We can use the same design matrix X from Combination 2.
+
+```{r}
+
+X.c7 <- X.c2
+dim(X.c7)
+round(cor(X.c7), 10)
+
+```
+
+## Start Tweaking Beta Values
+
+To reduce to moderate s/n (i.e. 2 strong sig, 2 moderate sig), - perhaps
+we can start with the same $\beta$ from Combination 6 (rho=0, moderate
+s/n), - that is $\beta = [3, 0.35, -3, -0.18]^T$
+
+Initially X1,X2,X3 Strong but X4 is very weak (p-value is 0.45). So I
+tried to increase the MAGNITUDE actual beta for X4 (-0.18 to -0.34),
+whilst bringing down the acual beta for X2 (0.35 to 0.28).
+
+```{r}
+result.c7 = check_significance(c(3, 0.28, -3, -0.32), X.c7)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c7$y.syn))
+```
+
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario 6 (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c7,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c7.rds"))
+```
+
+# ✅ Comb 8: rho=+0.9, moderate s/n
+
+## Reuse Data From C3
+
+```{r}
+
+X.c8 <- X.c3
+dim(X.c8)
+round(cor(X.c8), 10)
+
+```
+
+## Start tweaking beta values (from C7)
+
+To reduce to moderate s/n (i.e. 2 strong sig, 2 moderate sig), - perhaps
+we can start with the same $\beta$ from Combination 7 (rho=+0.5,
+moderate s/n), - that is $\beta = [3, 0.28, -3, -0.32]^T$ -- here is the
+first result
+
+```{r}
+result.c8.init = check_significance(c(3, 0.28, -3, -0.32), X.c8)
+```
+
+So for some reason I had to reduce the magnitude for X4 first (as
+opposed to raising the magnitude for X2 first), and then raise the
+magnitude (quite substantially, from 0.28 to 0.6) for X2.
+
+(🤔 it would be much easier if we started from Combination 3 -- rho=0.9
+with high s/n)
+
+```{r}
+result.c8 = check_significance(c(3, 0.6, -3, -0.29), X.c8)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c8$y.syn))
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c8,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c8.rds"))
+```
+
+# ✅Comb 9: rho= -0.5, moderate s/n
+
+
+## Reuse dataset from C4
+```{r}
+X.c9 <- X.c4
+dim(X.c9)
+round(cor(X.c9), 10)
+```
+## Start tweaking beta values (from C4, C7)
+
+Goal is to get 2 significant results, 2 moderate results
+
+To reduce to moderate s/n (i.e. 2 strong sig, 2 moderate sig), - perhaps
+we can start with the same $\beta$ from Combination 4 (rho=-0.5,
+high s/n), - that is $\beta = [3, 3.5, -3, -4.5]^T$.
+
+Reduce magnitude of X2, X4 for consistency.
+- Actually, we can try to use the beta values from C7 -- exact same thing
+except correlation coeff differ by a sign. Let's try (3, 0.28, -3, -0.32) first.
+
+Yep, only had to reduce magnitude of X4 from -0.32 to -0.3.
+
+```{r}
+result.c9 = check_significance(c(3, 0.28, -3, -0.3), X.c9)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c9$y.syn))
+```
+
+
+
+## Saving the results.
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c9,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c9.rds"))
+```
+
+
+
+# ✅Comb 10: rho=-0.9, moderate s/n
+
+## Reuse dataset from C5
+
+```{r}
+X.c10 <- X.c5
+dim(X.c10)
+round(cor(X.c10), 10)
+```
+
+## Start tweaking beta values (from C8)
+
+This is because dataset in C8 has rho=+0.9 with moderate s/n (only differ
+by correlation sign)
+We can use the resulting beta values from C8 as a starting point.
+- I.e. start from (3, 0.6, -3, -0.29).
+
+Only had to decrease magnitude of beta for X2 from 0.6 to 0.58.
+
+```{r}
+result.c10 = check_significance(c(3, 0.58, -3, -0.29), X.c10)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c10$y.syn))
+```
+
+
+## Saving the results.
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c10,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c10.rds"))
+```
+
+
+# ✅Comb 11: rho=0, weak s/n
+
+## Reuse Data From C1
+
+We can use the same dataset (mutually uncorrelated) from combination 1.
+
+```{r}
+X.c11 <- X.c1
+dim(X.c11)
+round(cor(X.c11), 10)
+```
+
+## Start tweaking beta values (from C6)
+
+
+Last time (rho=0 and moderate s/n) we got $\beta = [3, 0.35, -3, -0.18]^T$
+
+Perhaps we can even further reduce the magnitude for X2 and X4.
+Let's say beta for X2: 0.3 (from 0.35)
+Let's say beta for X4: -0.15 (from -0.18)
+
+```{r}
+result.c11 = check_significance(c(3, 0.3, -3, -0.15), X.c11)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c11$y.syn))
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c11,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c11.rds"))
+```
+
+
+
+# ✅Comb 12: rho=+0.5, weak s/n
+
+## Reuse data from C2
+
+We can use the same dataset from combination 2.
+
+```{r}
+X.c12 <- X.c2
+dim(X.c12)
+round(cor(X.c12), 10)
+```
+
+## Start Tweaking Beta Values (from C7)
+
+To reduce to weak s/n (i.e. 2 strong sig, 2 weak sig), - perhaps
+we can start with the same $\beta$ from Combination 7 (rho=+0.5, moderate
+s/n), - that is $\beta = [3, 0.28, -3, -0.32]^T$
+
+We can reduce magnitude of X2 and X4 to yield weak statistical significance
+
+Approach: decrease magnitude of X4 VERY SLIGHTLY then proceed with X2.
+Apparently this works.
+
+
+```{r}
+result.c12 = check_significance(c(3, 0.23, -3, -0.31), X.c12)
+```
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c12$y.syn))
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c12,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c12.rds"))
+```
+
+
+# ✅Comb 13: rho=+0.9, weak s/n
+
+## Reuse data from C3
+
+We can use the same dataset from combination 3.
+
+```{r}
+X.c13 <- X.c3
+dim(X.c13)
+round(cor(X.c13), 10)
+```
+
+## Start tweaking beta values (from C8)
+To reduce to weak s/n (i.e. 2 strong sig, 2 weak sig), - perhaps
+we can start with the same $\beta$ from Combination 8 (rho=+0.9,
+moderate s/n), - that is $\beta = [3, 0.6, -3, -0.29]^T$ -- here is the
+first result
+
+We try to reduce magnitude for X2 first then X4.
+- coefficient for X2 altered from 0.6 to 0.5, 
+- coefficient for X4 altered from -0.29 to -0.26
+
+```{r}
+result.c13 = check_significance(c(3, 0.5, -3, -0.26), X.c13)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c13$y.syn))
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c13,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c13.rds"))
+```
+
+
+
+# ✅Comb 14: rho=-0.5, weak s/n
+
+## Reuse data from C4
+```{r}
+X.c14 <- X.c4
+dim(X.c14)
+round(cor(X.c14), 10)
+```
+
+## Start tweaking beta values (from C12)
+
+Since data in C12 have rho=+0.5 and weak s/n (2 strong 2 weak), the respective beta value
+could be a good start (since only differ by correlation coeff sign)
+- namely from (3, 0.23, -3, -0.31).
+
+Decreasing magnitude of beta for X4 doesn't work (instead it became significant).
+So tried to decrease magnitude of beta for X2 just a bit (since already weak).
+
+Nope. doesn't work either.
+
+What ended up working is to decrease magnitude of X2,X4 concurrently.
+- Arrived at 0.22 and -0.22 for X2 and X4 respectively. X2 was already
+weak by then so just needed to decrease magnitude for X4 to -0.19.
+
+
+```{r}
+result.c14 = check_significance(c(3, 0.2, -3, -0.19), X.c14)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c14$y.syn))
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c14,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c14.rds"))
+```
+
+# ✅Comb 15: rho=-0.9, weak s/n
+
+## Reuse data from C5
+
+```{r}
+X.c15 <- X.c5
+dim(X.c15)
+round(cor(X.c15), 10)
+```
+
+## Start tweaking beta values (from C13)
+As the data from C13 has rho=+0.9 and weak s/n, using its resulting
+beta values can be a starting point (as here only difference is the sign of the
+correlation)
+- To recap, the resulting beta values from C13 are (3, 0.5, -3, -0.26)
+
+Well, only had to decrease magnitude of beta for X4 from -0.26 to -0.25.
+
+```{r}
+result.c15 = check_significance(c(3, 0.5, -3, -0.25), X.c15)
+```
+
+```{r}
+cat("Distribution of synthetic response below:")
+print(table(result.c15$y.syn)/ 2000)
+```
+
+
+## Saving the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(result.c15,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c15.rds"))
+```
+
+
+
+
+
+
+

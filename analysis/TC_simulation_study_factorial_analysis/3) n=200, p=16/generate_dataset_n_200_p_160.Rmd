@@ -1,0 +1,910 @@
+---
+title: "generate_dataset_n_200_p_160"
+author: "Keith Howen"
+date: "2025-07-29"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+# -------
+
+```{r}
+# TC genesis libs
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+```
+
+# Defining parameters & Inits for this study.
+# -------
+
+NOTE in favor of the sparsity problem we also choose X1,..,X4 as
+the ground truths.
+
+```{r}
+p=16
+n=200
+
+# Initializing a 'dict' like structure to store results for each
+# of the 15 factor combinations
+# this is because we cannot directly do multi-level indexing -- 
+# we have to initialize each value as a list first, then overwrite it.
+rhos <- c('-0.9', '-0.5', '0', '0.5', '0.9')
+signal_strengths <- c('weak', 'moderate', 'strong')
+
+# storing result from check_significnance() -- 
+# that is, the synthetic response, fitted true model, distribution of y, etc
+results <- list()
+for (rho in rhos) {
+  
+  results[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    results[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+# covariance matrix for design matrices
+Sigmas <- list()
+for (rho in rhos) {
+  
+  Sigmas[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    Sigmas[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+# the X data for each combination
+X_data <- list()
+for (rho in rhos) {
+  
+  X_data[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    X_data[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+results
+
+```
+
+Want:
+- Histogram of true probabilities (with true beta coef)
+- Histogram of probabilities in model containing X1,..,X4
+- LRT in addition to wald test to test each of $H_0: \beta_i=0,\ 1 \le i \le4$
+  - Do we need only p-values? 
+  
+
+
+# Foreword on synthetic design matrix generation.
+# -------
+One way to enforce the SAME design matrix for a value of rho regardless
+of the s/n of the ground truths to y is to
+- Set the X matrix for rho, moderate & weak s/n to be the same as X matrix
+for rho, high s/n. 
+Analogy: if b=a and c=a, then a=b=c. 
+
+In other words,
+"high" S/N is the canonical design matrix for each rho,
+from which other S/N datasets are derived.
+
+
+# ✓ Comb 1: rho= 0, high (or strong) s/n
+# -------
+
+```{r}
+
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0'
+desired_sig='strong'
+
+
+stopifnot(desired_rho %in% rhos)
+stopifnot(desired_sig %in% signal_strengths)
+
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['high']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['high']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+# we can try using initial beta values from Comb 1, 
+# see if correlation reduces significance of ground truths or not.
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.3, 1.3, -1.3, -1.3),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+Potential question: why the true beta values are so different? 
+- if intention is to mitiage Hauck-DOnner effect why didnt you do it sooner
+
+# ✓ Comb 2: rho= 0, moderate s/n
+# -------
+
+Intuition: sometimes altering significance of X2, X4 isn't enough since 
+even decreasing a bit can lead to weak signifiance
+- Which is why one probably should consider lowering the significance of X1,X3
+(since partial tests mean that, in the presence of the strong ones, how can
+including this variable improve the likelihood)
+
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0'
+desired_sig='moderate'
+
+
+stopifnot(desired_rho %in% rhos)
+stopifnot(desired_sig %in% signal_strengths)
+
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1, 0.2, -1, -0.33),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 3: rho= 0, weak s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0'
+desired_sig='weak'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+# we can try using initial beta values from Comb 1, 
+# see if correlation reduces significance of ground truths or not.
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.3, 0.1, -1.3, -0.25),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# ✓ Comb 4: rho= +0.5, strong s/n
+# -------
+
+
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.5'
+desired_sig='strong'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.3, 1.3, -1.3, -1.3),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 5: rho= +0.5, moderate s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.5'
+desired_sig='moderate'
+
+
+stopifnot(desired_rho %in% rhos)
+stopifnot(desired_sig %in% signal_strengths)
+
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1, 0.4, -1, -0.5),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 6: rho= +0.5, weak s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.5'
+desired_sig='weak'
+
+
+stopifnot(desired_rho %in% rhos)
+stopifnot(desired_sig %in% signal_strengths)
+
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1, 0.3, -1, -0.5135),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# ✓ Comb 7: rho= -0.5, strong s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.5'
+desired_sig='strong'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.3, 1.3, -1.3, -1.3),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 8: rho= -0.5, moderate s/n
+# -------
+
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.5'
+desired_sig='moderate'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+# initial beta from 
+# rho=+0.5, moderate s/n which is c(1, 0.4, -1, -0.5)
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1, 0.7, -1, -0.35),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# ✓ Comb 9: rho= -0.5, weak s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.5'
+desired_sig='weak'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+# initial beta from 
+# rho=+0.5, weak s/n which is c(1, 0.3, -1, -0.5135)
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1, 0.69, -1, -0.2),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 10: rho= +0.9, strong s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.9'
+desired_sig='strong'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.5, -1.7, 1, -1),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 11: rho= +0.9, moderate s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.9'
+desired_sig='moderate'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.6, -1.47, 1, -0.27),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# ✓ Comb 12: rho= +0.9, weak s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='0.9'
+desired_sig='weak'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.6, -1.43, 1, -0.23),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 13: rho= -0.9, strong s/n
+# -------
+
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.9'
+desired_sig='strong'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.37, -3, 1.1, -0.8),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+
+# ✓ Comb 14: rho= -0.9, moderate s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.9'
+desired_sig='moderate'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.37, -2.5, 1.1, -0.64),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# ✓ Comb 15: rho= -0.9, weak s/n
+# -------
+```{r}
+# we just need to input these 2 variables. No hard coding rho and s/n levels :)
+desired_rho='-0.9'
+desired_sig='weak'
+
+stopifnot( desired_rho %in% rhos)
+stopifnot( desired_sig %in% signal_strengths)
+
+# if both are still empty, this means we need to generate a new X matrix,
+# in which case the covariance matrix and design matrix will be generated.
+#
+# Upon the generation, for desired_sig != 'high', the if condition will be false
+# in which we can just copy the synthetic design matrix from rho, high s/n for
+# the other s/n levels.
+
+# note we use identical() because we cannot compare matrices and strings directly.
+want_new_design_matrix =
+  ( identical(Sigmas[[desired_rho]][['strong']],'empty') &
+      identical(X_data[[desired_rho]][['strong']],'empty') )
+
+if (want_new_design_matrix) {
+  Sigmas[[desired_rho]][['strong']] = construct_block_cov(p, as.numeric(desired_rho))
+  X_data[[desired_rho]][['strong']] = generate_synthetic_vars(Sigmas[[desired_rho]][['strong']], SIZE=n)
+} else {
+  # Deep copy to ensure complete independence
+  Sigmas[[desired_rho]][[desired_sig]] <- as.matrix(Sigmas[[desired_rho]][['strong']])
+  X_data[[desired_rho]][[desired_sig]] <- as.matrix(X_data[[desired_rho]][['strong']])
+  # OR for absolutely bulletproof deep copy (works for any R object)
+  # Sigmas[[desired_rho]][[desired_sig]] <- deepcopy(Sigmas[[desired_rho]][['strong']])
+  # X_data[[desired_rho]][[desired_sig]] <- deepcopy(X_data[[desired_rho]][['strong']])
+}
+
+
+dim(X_data[[desired_rho]][[desired_sig]])
+dim(Sigmas[[desired_rho]][[desired_sig]])
+Sigmas[[desired_rho]][[desired_sig]][1:6,1:6]
+sum(Sigmas[[desired_rho]][[desired_sig]]) - sum(diag(Sigmas[[desired_rho]][[desired_sig]]))
+
+
+
+results[[desired_rho]][[desired_sig]] = check_significance(
+                                  c(1.37, -1.8, 1.1, -0.4),
+                                  X_data[[desired_rho]][[desired_sig]])
+
+```
+
+# Finally, save all results!
+```{r}
+BASE_DIR = "simulation_factorial_analysis_n_200_p_16_outputs"
+outdir = here("output", BASE_DIR)
+saveRDS(results,
+        file = file.path(outdir, "results.rds"))
+```
+
+
+
+
+

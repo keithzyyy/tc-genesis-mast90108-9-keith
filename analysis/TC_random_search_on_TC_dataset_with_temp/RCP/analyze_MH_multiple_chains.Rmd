@@ -1,0 +1,880 @@
+---
+title: "analyze_MH_multiple_chains"
+output: html_document
+date: "2025-09-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+# Load all local and ext libraries 
+```{r}
+if (!requireNamespace("here", quietly=TRUE)) install.packages("here")
+library(here) # to override here(), simply go to File -> New Project
+here()
+library(parallel)
+library(future.apply)
+library(progressr)
+
+source(here("lib", "gibbs_sampler_random_search.R"))
+source(here("lib", "load_and_preprocess_TC.R"))
+
+#SEED=123
+#set.seed(SEED) # NOTE: NO further set.seed() needs to be invoked.
+```
+```{r}
+list.files(here("output", "mh_runs_4_lambda_run_2"))
+```
+
+
+```{r}
+
+names(
+  readRDS(here("output", "mh_runs_4_lambda_run_2", "mh_lambda_0.25_chain_3_sparse.rds"))
+)
+
+readRDS(here("output", "mh_runs_4_lambda_run_2", "mh_lambda_0.25_chain_1_full.rds"))$summary
+
+```
+
+
+# Initialize
+
+
+```{r}
+
+# extract 3 things: lambda value, initid, init desc
+chainids = str_match( list.files(here("output", "mh_runs_4_lambda_run_2")),
+  "([\\d]+\\.+[\\d]+)_chain_(\\d)_([^\\d]+).rds"
+  )
+
+# ignore all mismatches and discard raw file names
+chainids = chainids[apply(!is.na(chainids), 1, all), -1]
+
+# store lookup for init val descriptions
+init.dicts = unique(chainids[,-1])
+init.dicts = as.list(setNames(init.dicts[,2], init.dicts[,1]))
+chainids = chainids[,-3]
+
+# initialize data structure to store MH samples across all lambda and init vals
+MH_samples = list()
+for (i in 1:nrow(chainids)){
+  lambda = chainids[i,][1]
+  initid = chainids[i,][2]
+  
+  if (! lambda %in% names(MH_samples)){
+    MH_samples[[lambda]] = list()
+  } 
+  
+  MH_samples[[lambda]][[initid]] = list()
+}
+```
+
+
+# Read samples
+
+```{r}
+
+for (i in 1:nrow(chainids)){
+  
+  lambda = chainids[i,][1]
+  initid = chainids[i,][2]
+  initdesc = init.dicts[[initid]]
+  
+  fp = sprintf("mh_lambda_%0.2f_chain_%d_%s.rds",
+          as.double(lambda),
+          as.integer(initid),
+          initdesc)
+  
+  
+  MH_samples[[lambda]][[initid]] =
+    readRDS(here("output", "mh_runs_4_lambda_run_2", fp))$rs
+
+  
+}
+```
+
+
+# Perform chi^2 convergence test
+
+### Function
+```{r}
+stationarity_chisq <- function(
+  S,                      # numeric vector (one long chain) OR list of numeric vectors (q chains)
+  k0 = 0,                 # extra burn-in to drop per chain
+  q  = NULL,              # number of sub-sequences (if NULL and S is a vector, chosen automatically)
+  r  = NULL,              # number of intervals (if NULL, chosen automatically)
+  breaks = c("quantile", "equalwidth"),  # how to make r bins
+  min_expected = 5,       # target >= 5 expected counts/cell
+  simulate_p = FALSE,     # if some cells < 5, use Monte Carlo p-value
+  B = 10000               # replicates for Monte Carlo p-value (chisq.test)
+) {
+  breaks <- match.arg(breaks)
+
+  # --- helper: coerce input to list of q sub-sequences, each length K ---
+  to_blocks <- function(S, k0, q) {
+    if (is.list(S)) {
+      # q chains provided
+      chains <- lapply(S, function(x) {
+        stopifnot(is.numeric(x))
+        if (k0 >= length(x)) stop("k0 >= chain length.")
+        x[(k0 + 1):length(x)]
+      })
+      K <- min(sapply(chains, length))
+      if (K < 10) stop("Not enough post-burn draws per chain for splitting.")
+      blocks <- lapply(chains, function(x) x[(length(x) - K + 1):length(x)])
+      list(blocks = blocks, q = length(blocks), K = K)
+    } else {
+      # single long chain: split into q blocks after burn-in
+      x <- as.numeric(S)
+      if (k0 >= length(x)) stop("k0 >= chain length.")
+      x <- x[(k0 + 1):length(x)]
+      if (is.null(q)) {
+        # aim for at least ~100 per block, but ≥ 2 blocks
+        q <- max(2L, min(10L, floor(length(x) / 100)))
+      }
+      K <- floor(length(x) / q)
+      if (K < 10) stop("Not enough draws per block; decrease q or k0.")
+      # take the last q*K draws so blocks are equal length
+      x <- tail(x, q * K)
+      blocks <- split(x, rep(seq_len(q), each = K))
+      list(blocks = blocks, q = q, K = K)
+    }
+  }
+
+  blk <- to_blocks(S, k0 = k0, q = q)
+  blocks <- blk$blocks; q <- blk$q; K <- blk$K
+
+  # --- choose r if missing to satisfy ~>= min_expected expected per cell ---
+  N_total <- q * K
+  if (is.null(r)) {
+    r <- max(2L, min(10L, floor(N_total / (min_expected * q))))
+  }
+
+  # --- define bin edges over pooled S ---
+  pooled <- unlist(blocks, use.names = FALSE)
+  if (breaks == "quantile") {
+    # quantile bins give near-balanced row totals -> helps the 5-per-cell rule
+    probs <- seq(0, 1, length.out = r + 1)
+    # jitter duplicates in extremes to avoid identical breaks
+    qs <- as.numeric(stats::quantile(pooled, probs, type = 7, na.rm = TRUE))
+    eps <- .Machine$double.eps^0.25
+    qs <- unique(qs)  # guard: if r is too large for unique values, reduce r
+    if (length(qs) < r + 1) {
+      r <- length(qs) - 1L
+      if (r < 2) stop("Too few unique values in S to form >=2 bins.")
+    }
+    brks <- if (length(qs) == r + 1) qs else stats::quantile(pooled, seq(0, 1, length.out = r + 1))
+    brks[1]  <- brks[1]  - eps
+    brks[r+1] <- brks[r+1] + eps
+  } else {
+    brks <- seq(min(pooled), max(pooled), length.out = r + 1)
+  }
+
+  # --- build r x q contingency table ---
+  binlab <- function(x) cut(x, breaks = brks, include.lowest = TRUE, right = TRUE)
+  tab <- sapply(blocks, function(b) table(binlab(b)))
+  # ensure matrix with rownames (intervals) and colnames (block index)
+  if (is.null(dim(tab))) tab <- matrix(tab, nrow = r)
+  rownames(tab) <- levels(binlab(pooled))
+  colnames(tab) <- paste0("block_", seq_len(q))
+
+  # --- chi-squared test of independence ---
+  # check expected counts
+  exp_counts <- suppressWarnings(chisq.test(tab)$expected)
+  small <- any(exp_counts < min_expected)
+
+  test <- suppressWarnings(
+    chisq.test(tab, simulate.p.value = simulate_p || small, B = B)
+  )
+
+  list(
+    p_value = unname(test$p.value),
+    statistic = unname(test$statistic),
+    df = unname(test$parameter),
+    small_expected = small,
+    method = if (simulate_p || small) "Chi-squared with simulated p-value" else "Pearson Chi-squared",
+    r = r, q = q, K = K, k0 = k0,
+    breaks = brks,
+    table = tab
+  )
+}
+
+```
+
+
+```{r}
+stationarity_chisq_lambda = function(MH_samples,
+                                     extra_burn_in=2000,
+                                     breaks="quantile",
+                                     r=NULL,
+                                     min_expected=5){
+  library(stringr)
+  
+
+  lambda_str = readline(prompt=
+                          paste("Enter lambda value from",
+                                str_c(names(MH_samples), collapse = ", "),
+                                ": \n"))
+  lambda_str = as.character(lambda_str)
+  
+  # BIC traces across the (four) initial values
+  BIC_list = lapply(MH_samples[[as.character(lambda_str)]],
+                    function(S){S$bic_trace})
+  
+  cat("BIC list successfully created.\n")
+  
+  # perform the chi squared test
+  stationarity_chisq(BIC_list,
+                     breaks=breaks,
+                     k0 = extra_burn_in,
+                     r=r,
+                     min_expected=min_expected)
+}
+```
+
+
+### For lambda=0.1
+```{r}
+chisq_0.1 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=5000,
+                    breaks='quantile',
+                    r=10,
+                    min_expected=5)
+chisq_0.1
+```
+
+
+### For lambda=0.14
+```{r}
+chisq_0.14 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=5000,
+                    breaks='quantile',
+                    r=10,
+                    min_expected=5)
+chisq_0.14
+```
+
+
+### For lambda=0.18
+```{r}
+chisq_0.18 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=5000,
+                    breaks='quantile',
+                    r=10,
+                    min_expected=5)
+chisq_0.18
+```
+
+
+### For lambda=0.20
+```{r}
+chisq_0.20 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=5000,
+                    breaks='quantile',
+                    r=10,
+                    min_expected=5)
+chisq_0.20
+```
+
+
+
+### For lambda=0.25
+
+```{r}
+chisq_0.25 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=5000,
+                    breaks='quantile',
+                    r=7,
+                    min_expected=5)
+chisq_0.25
+```
+
+
+### For lambda=0.5
+
+```{r}
+
+chisq_0.5 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=2000,
+                    breaks='quantile')
+
+chisq_0.5
+```
+
+
+### For lambda=0.75
+```{r}
+chisq_0.75 = stationarity_chisq_lambda(MH_samples,
+                    extra_burn_in=2000,
+                    breaks='quantile')
+
+chisq_0.75
+
+```
+
+
+# Perform GR diagnostics test
+### Function
+```{r}
+GR_diagnostics_v2 <- function(results,
+                           split_chains = TRUE,
+                           drop_rule = c("per_chain","global","none"),
+                           rhat_cut = 1.05) {
+  stopifnot(is.list(results), length(results) >= 2)
+  if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+  drop_rule <- match.arg(drop_rule)
+
+  # 1) Collect raw indicator matrices per chain
+  mats <- lapply(results, function(S) {
+    stopifnot(is.matrix(S))
+    S
+  })
+
+  # 2) Split each chain into two halves (BDA3 recommendation)
+  if (split_chains) {
+    mats <- unlist(lapply(mats, function(S) {
+      n <- nrow(S); h <- floor(n/2)
+      list(S[1:h, , drop = FALSE], S[(h+1):n, , drop = FALSE])
+    }), recursive = FALSE)
+  }
+
+  p <- ncol(mats[[1]])
+  vnames <- colnames(mats[[1]])
+
+  # 3) Choose variables to keep (avoid degeneracy)
+  keep <- rep(TRUE, p); why_drop <- rep(NA_character_, p)
+  if (drop_rule != "none") {
+    if (drop_rule == "per_chain") {
+      wvar <- sapply(mats, function(S) apply(S, 2, var))
+      keep <- apply(wvar > 0, 1, all)
+      why_drop[!keep] <- "degenerate_in_some_chain"
+    } else if (drop_rule == "global") {
+      pooled <- do.call(rbind, mats)
+      keep <- apply(pooled, 2, var) > 0
+      why_drop[!keep] <- "degenerate_globally"
+    }
+  }
+  if (!any(keep)) stop("No non-degenerate variables to diagnose.")
+
+  # 4) Build coda mcmc.list from subchains
+  mlist <- coda::mcmc.list(lapply(mats, function(S) coda::mcmc(S[, keep, drop = FALSE])))
+
+  # 5) Univariate GR and ESS (ESS summed across subchains)
+  gr   <- coda::gelman.diag(mlist, multivariate = FALSE)$psrf
+  ess  <- sapply(seq_len(sum(keep)), function(j)
+           sum(sapply(mats, function(S) coda::effectiveSize(S[, j]))))
+
+  out <- data.frame(
+    variable   = vnames[keep],
+    Rhat_point = gr[, "Point est."],
+    Rhat_upper = gr[, "Upper C.I."],
+    ESS_sum    = ess,
+    converged  = gr[, "Point est."] < rhat_cut
+  )
+  rownames(out) <- NULL
+
+  list(
+    table   = out[order(out$Rhat_point, decreasing = TRUE), ],
+    dropped = data.frame(variable = vnames[!keep], reason = why_drop[!keep]),
+    params  = list(split_chains = split_chains, drop_rule = drop_rule, rhat_cut = rhat_cut)
+  )
+}
+```
+
+
+### GR diag for lambda=0.10
+
+```{r}
+
+XTRA_BURN_IN = 100
+
+GR_diag_0.10 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.10"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.10
+```
+
+```{r}
+
+saveRDS(GR_diag_0.10,
+        here("output", "mh_runs_4_lambda_run_2_diagostic", "GR_diag_0.10.rds"))
+
+
+
+
+```
+
+
+
+### GR diag for lambda=0.14
+
+```{r}
+
+XTRA_BURN_IN = 100
+
+GR_diag_0.14 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.14"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.14
+```
+
+
+### GR diag for lambda=0.18
+
+```{r}
+
+XTRA_BURN_IN = 100
+
+GR_diag_0.18 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.18"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.18
+```
+
+
+
+
+### GR diag for lambda=0.20
+
+```{r}
+
+XTRA_BURN_IN = 100
+
+GR_diag_0.20 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.20"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.20
+```
+
+
+### GR diag for lambda=0.25
+
+
+```{r}
+
+XTRA_BURN_IN = 100
+
+GR_diag_0.25 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.25"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.25
+```
+
+
+### GR diag for lambda=0.5
+```{r}
+
+XTRA_BURN_IN = 800
+
+GR_diag_0.50 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.50"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.50
+```
+
+
+### GR diag for lambda=0.75
+```{r}
+
+XTRA_BURN_IN = 800
+
+GR_diag_0.75 = GR_diagnostics_v2(
+  lapply(MH_samples[["0.75"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_0.75
+```
+
+
+### GR diag for lambda=1
+```{r}
+
+XTRA_BURN_IN = 800
+
+GR_diag_1 = GR_diagnostics_v2(
+  lapply(MH_samples[["1.00"]], function(S){S$samples[-c(1:XTRA_BURN_IN),]}),
+  rhat_cut = 1.1
+)
+
+GR_diag_1
+```
+
+
+# Summary
+
+### Acceptance rate
+
+```{r}
+
+for (lam in names(MH_samples)){
+  for (initid in names(MH_samples[[lam]])){
+    acc.rate=MH_samples[[lam]][[initid]]$acc.rate
+    cat(sprintf("For lambda=%s with initid=%s, acc.rate=%0.3f\n",
+                lam,initid,acc.rate))
+  }
+}
+
+#MH_samples[["0.25"]][["1"]]$acc.rate
+```
+
+### BIC Trace
+
+```{r}
+
+#want_legend=TRUE
+
+outdir <- here::here("output", "mh_runs_4_lambda_run_2_plots")
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+png(file.path(outdir, "bic_traces_grid.png"),
+    width = 12, height = 6, units = "in", res = 300)
+
+# 1. Find global min and max across all bic_traces (scaled by 0.5)
+all_bics <- unlist(lapply(MH_samples, function(lam_list) {
+  lapply(lam_list, function(chain) chain$bic_trace * 0.5)
+}))
+bic_min <- min(all_bics)
+bic_max <- max(all_bics)
+
+# 2. Adjust layout: extra row for legend
+layout(matrix(c(1:(length(MH_samples)), rep(length(MH_samples)+1, 4)),
+              ncol = 4, byrow = TRUE))
+
+par(mar = c(4,4,1,0) + 0.08)
+
+# plot each lambda
+for (lam in names(MH_samples)) {
+  trace1 <- MH_samples[[lam]][["1"]]$bic_trace * 0.5
+  
+  plot(trace1, type='l', col=1,
+       xlab="Iteration", ylab="BIC",
+       ylim = c(bic_min, bic_max - 3800))
+  
+  for (i in 2:length(MH_samples[[lam]])) {
+    lines(MH_samples[[lam]][[as.character(i)]]$bic_trace * 0.5,
+          col=i)
+  }
+  
+  title(sprintf("BIC trace plots for lambda=%s", lam))
+}
+
+# 3. Shared legend at bottom
+par(mar=c(0,0,0,0))
+plot.new()
+legend("bottom",
+       legend = unlist(init.dicts),
+       col = 1:length(init.dicts),
+       lty = 1,
+       cex = 1.5,
+       horiz = FALSE)
+
+dev.off()
+
+
+
+
+```
+
+
+
+
+### Find BIC Minimizer.
+```{r}
+# Find the best model across all (lambda, chain) runs
+# Assumes each MH_samples[[lambda]][[chain]] has:
+#   $samples   : matrix [iters x p] of 0/1 (burn-in already removed)
+#   $bic_trace : numeric vector length = iters  (NOTE not yet burn-in adjusted)
+#
+# data_for_BIC: data.frame(X, y) if we need to compute BICs on the fly
+# top_k       : how many unique best models to report
+# delta       : ΔBIC threshold for the elite set
+
+find_best_overall <- function(MH_samples, data_for_BIC = NULL,
+                              top_k = 5, delta = 2, burn_in=1000) {
+
+  # helper: get BICs for a chain (use stored trace if present)
+  get_chain_bics <- function(chain_obj) {
+    if (!is.null(chain_obj$bic_trace)) return(chain_obj$bic_trace)
+    stopifnot(!is.null(data_for_BIC))
+    # lazily compute if not provided
+    S <- chain_obj$samples
+    apply(S, 1, function(v) compute.BIC.auto(data_for_BIC, v))
+  }
+
+  rows <- list()
+
+  for (lam in names(MH_samples)) {
+    for (ch in names(MH_samples[[lam]])) {
+      obj  <- MH_samples[[lam]][[ch]]
+      S    <- obj$samples
+      bics <- get_chain_bics(obj)
+      
+      bics <- bics[ (burn_in+1) :length(bics)]
+
+      # per-iteration records for this chain
+      if (is.null(colnames(S))) colnames(S) <- paste0("X", seq_len(ncol(S)))
+      keys <- apply(S, 1, paste0, collapse = "")  # hash the model
+      rows[[length(rows) + 1]] <- data.frame(
+        lambda = lam,
+        chain  = ch,
+        iter   = seq_along(bics),
+        BIC    = bics,
+        key    = keys,
+        p_active = rowSums(S),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+
+  all_df <- do.call(rbind, rows)
+
+  # Reduce to unique models: keep the *best* BIC seen for each key
+  best_by_key <- do.call(rbind, lapply(split(all_df, all_df$key), function(d) {
+    d[which.min(d$BIC), ][1, ]  # the row with min BIC for this model
+  }))
+
+  # Order by BIC
+  best_by_key <- best_by_key[order(best_by_key$BIC), ]
+
+  # The single best model
+  best_row <- best_by_key[1, ]
+  # Recover variable names for the best model (from any chain where it appeared)
+  # Find one sample row that matches its key:
+  pick <- NULL
+  for (lam in names(MH_samples)) {
+    for (ch in names(MH_samples[[lam]])) {
+      S <- MH_samples[[lam]][[ch]]$samples
+      if (is.null(colnames(S))) colnames(S) <- paste0("X", seq_len(ncol(S)))
+      k <- apply(S, 1, paste0, collapse = "")
+      w <- which(k == best_row$key)
+      if (length(w)) { pick <- list(S = S[w[1], ], names = colnames(S)); break }
+    }
+    if (!is.null(pick)) break
+  }
+  best_vars <- pick$names[as.logical(pick$S)]
+
+  # Top-k unique models table
+  top_k_tbl <- head(best_by_key, top_k)
+  # Attach variable count convenience
+  top_k_tbl$k <- top_k_tbl$p_active
+
+  # Elite set (ΔBIC <= delta)
+  minB <- best_row$BIC
+  elite_tbl <- subset(best_by_key, BIC <= minB + delta)
+  elite_tbl$k <- elite_tbl$p_active
+
+  list(
+    best = list(
+      lambda   = best_row$lambda,
+      chain    = best_row$chain,
+      iter     = best_row$iter,
+      BIC      = as.numeric(best_row$BIC),
+      k        = as.integer(best_row$p_active),
+      key      = best_row$key,
+      variables = best_vars
+    ),
+    top_k  = top_k_tbl[, c("lambda","chain","iter","BIC","k","key")],
+    elite  = elite_tbl[,  c("lambda","chain","iter","BIC","k","key")]
+  )
+}
+
+
+# If your objects already contain $bic_trace, you don’t need data_for_BIC:
+res <- find_best_overall(MH_samples)
+
+# If not, pass your data.frame(X, y) so BIC can be computed:
+# res <- find_best_overall(MH_samples, data_for_BIC = data.frame(X, y))
+
+res$best$BIC
+res$best$variables           # names in the overall best model
+res$top_k                    # top-5 unique models
+res$elite                    # ΔBIC ≤ 2 set (edit `delta` if you like)
+
+```
+
+
+
+```{r}
+
+# BIC minimizer from lambda=0.1
+min(
+  unlist(
+  lapply(MH_samples[["0.10"]], function(S){min(S$bic_trace)} )
+)
+)
+
+
+```
+
+#### Save BIC minimizer(s)
+```{r}
+here()
+
+saveRDS(res,
+        here("output", "mh_runs_4_lambda_run_2", "BIC_minimizers_lam_0.1_to_1.rds"))
+```
+
+#### Find for updated lambda
+```{r}
+
+
+MH_samples_lam_gt_1 =
+  MH_samples[
+    names(MH_samples)[sapply(names(MH_samples), function(x) as.double(x) > 1)]
+  ]
+
+
+res_lam_from_1.5_to_3 <- find_best_overall(MH_samples_lam_gt_1)
+
+saveRDS(res_lam_from_1.5_to_3,
+        here("output", "mh_runs_4_lambda_run_2", "BIC_minimizers_lam_1.50_to_3.rds"))
+
+
+```
+
+
+```{r}
+
+res_lam_from_1.5_to_3$best
+
+```
+
+
+### FIND BIC MINIMIZER FOR ALL.
+
+```{r}
+
+
+res_lam_all_0.1_to_3 <- find_best_overall(MH_samples)
+
+saveRDS(res_lam_all_0.1_to_3,
+        here("output", "mh_runs_4_lambda_run_2", "res_lam_all_0.1_to_3.rds"))
+
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+res_lam_all_0.1_to_3$best
+```
+
+
+### Distinct prop
+
+
+```{r}
+
+
+for (f in list.files(here("output", "mh_runs_4_lambda_run_2"))){
+  if (f != "metadata.rds"){
+    print(f)
+    print(readRDS(here("output", "mh_runs_4_lambda_run_2", f))$summary$distinct_prop)
+  }
+}
+
+
+
+```
+
+
+
+# Plots
+
+```{r}
+library(ggplot2)
+outdir <- here::here("output", "mh_runs_4_lambda_run_2_plots")
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+# build the data once
+inc_df <- inclusion_summary(mcmc.samples.0.1.combined, top_k = 65)
+```
+
+
+```{r, width_in = 14, height_in = 10}
+
+# make the plot (your function should return a ggplot object)
+p_inc <- plot_inclusion(inc_df) +
+  theme(
+    text = element_text(size = 11),
+    axis.text.y = element_text(size = 8),
+    plot.margin = margin(10, 20, 10, 10)  # a bit more room on the right
+  )
+
+# dynamic sizing: ~0.25 in per row works well for dense caterpillars
+n_rows  <- nrow(inc_df)
+height_in <- max(12, 0.25 * n_rows + 2)   # min 12in; pad a little
+width_in  <- 12
+
+# 1) Thesis-quality vector PDF (embed fonts, crisp at any zoom)
+pdf_file <- file.path(outdir, "inclusion_top65_lambda0.10.pdf")
+ggsave(pdf_file, plot = p_inc, device = cairo_pdf,
+       width = width_in, height = height_in, units = "in")
+
+# 2) Optional PNG for quick sharing
+png_file <- file.path(outdir, "inclusion_top65_lambda0.10.png")
+ggsave(png_file, plot = p_inc, dpi = 300,
+       width = width_in, height = height_in, units = "in", bg='white')
+
+
+```
+
+# BIC Minimizer agree with top rel freqs?!
+
+```{r}
+
+
+top.50.vars.relfreq = names(head(sort(rel.freq.inference(mcmc.samples.0.1.combined)$rel.freqs.non.basin,
+     decreasing=TRUE), n=52))
+
+
+
+intersect(top.50.vars.relfreq, res$best$variables)
+
+```
+
+
+```{r}
+res$best$variables   
+```
+
+
+
+
+
+# Next Steps/interpretation
+
+
+With λ = 0.10 chains mix well (R̂ ≈ 1 for all non-degenerate vars), so it’s a solid setting for inference on inclusion frequencies.
+
+The global BIC winner came from λ = 0.75 (chain 3), which is totally fine.
+- We will just report the overall best/elite models pooled across all λ, and use λ = 0.10 samples to discuss stability.
+
+Hmm... we can try to further narrow down variable selection to take the intersection of best var set from:
+- BIC minimizer (52 variables)
+- top 50 with highest rel freq 
+
+Then obtain out of sample predicive performance. 
+
+

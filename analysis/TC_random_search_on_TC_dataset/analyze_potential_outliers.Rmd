@@ -1,0 +1,139 @@
+---
+title: "analyze_potential_outliers"
+author: "Keith Howen"
+date: "2025-09-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Check working directory
+
+```{r}
+library(here)
+here()
+```
+
+
+# Rationale
+logistic regression CAN be affected by outliers as it tries to align predicted
+probabilities with class labels as close as possible.
+
+Concern is that this could affect model fittings which in turns affect the procedure.
+
+
+# Import all libraries (incl. custom)
+
+```{r}
+source(here("lib", "load_and_preprocess_TC.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+
+install.packages('robustbase')
+library(robustbase)
+```
+
+
+
+# Detect high leverage observations
+
+```{r}
+
+detect_high_leverage <- function(X,
+                                 method = c("chisq","iqr"),
+                                 alpha = 0.975,
+                                 return = c("indices","distances"),
+                                 iqr_scaling=1.5) {
+  method  <- match.arg(method)
+  return  <- match.arg(return)
+  
+  # standardize and reduce dimension
+  X_scaled <- scale(X)
+  pca_fit  <- prcomp(X_scaled, center = TRUE, scale. = TRUE)
+  
+  # keep PCs that explain 95% variance
+  var_expl <- cumsum(pca_fit$sdev^2) / sum(pca_fit$sdev^2)
+  k <- which(var_expl >= 0.95)[1]
+  X_pca <- pca_fit$x[, 1:k]
+  
+  # robust covariance + Mahalanobis distance
+  cov_rob <- robustbase::covMcd(X_pca) 
+  mdist   <- mahalanobis(X_pca, center = cov_rob$center, cov = cov_rob$cov)
+  
+  if (method == "chisq") {
+    cutoff   <- qchisq(alpha, df = k)
+    outliers <- which(mdist > cutoff)
+    title <- sprintf("Robust Mahalanobis distances\n(Flagged %d obs, α=%.3f)", length(outliers), alpha)
+    abline_h <- cutoff
+  } else if (method == "iqr") {
+    Q1 <- quantile(mdist, 0.25)
+    Q3 <- quantile(mdist, 0.75)
+    IQR_val <- Q3 - Q1
+    cutoff <- Q3 + iqr_scaling * IQR_val
+    outliers <- which(mdist > cutoff)
+    title <- sprintf("Robust Mahalanobis distances\n(Flagged %d obs by dists > Q3 + %.1f * IQR)",
+                     length(outliers),
+                     iqr_scaling)
+    abline_h <- cutoff
+  }
+  
+  # plot
+  plot(mdist, pch=20, col = ifelse(seq_along(mdist) %in% outliers, "red","black"),
+       main=title, ylab="Distance", xlab="Obs index")
+  abline(h=abline_h, col="blue", lty=2)
+  
+  if (return == "indices") {
+    return(outliers)
+  } else {
+    return(data.frame(index=seq_along(mdist), mdist=mdist, flagged=seq_along(mdist) %in% outliers))
+  }
+}
+
+
+high_leverage_idx = detect_high_leverage(X,
+                                         method="iqr",
+                                         return="indices",
+                                         iqr_scaling=55)
+
+```
+
+```{r}
+X[high_leverage_idx,]
+```
+
+```{r}
+xvar = "absolute_vorticity_averaged"
+
+dummy_y = rep(0, nrow(X))
+emphasize_high_leverages = 0.000000005
+dummy_y[high_leverage_idx]=emphasize_high_leverages
+
+plot(X[,xvar],
+     dummy_y,
+     pch=20,
+     col = ifelse(1:nrow(X) %in% high_leverage_idx, "red","black"),
+       main=sprintf("Dot plot for %s", xvar),
+       xlab=xvar,
+       yaxt = "n",
+       ylab="",
+     ylim=c(0, emphasize_high_leverages + 0.00000000005))
+```
+
+# Try to run RS without high leverage observations
+```{r}
+mh.no.high.leverages = MH.random.search(
+                             rep(1,ncol(X)),
+                             data=data.frame(X[-high_leverage_idx,],y[-high_leverage_idx]),
+                             burnin = 200,
+                             iter   = 5200,
+                             debug  = TRUE,
+                             lambda = 1)
+```
+
+
+
+
+

@@ -1,0 +1,328 @@
+---
+title: "presentation prep"
+author: "Keith Howen"
+date: "2025-10-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Imports
+```{r}
+library(here)
+library(sf)
+library(ggplot2)
+library(ggspatial)
+library(prettymapr)
+library(dplyr)
+
+```
+
+```{r}
+list.files(here("data"))
+```
+
+# Read datasets with geospatial coordinates
+
+```{r}
+TCC_developing_12h = read.csv(here("data", "TCC_developing_12h.csv"))
+TCC_nondeveloping = read.csv(here("data", "TCC_non_developing.csv"))
+```
+
+
+```{r}
+TCC_nondeveloping
+```
+
+```{r}
+TCC_developing_12h
+```
+
+
+# Raw plot
+```{r}
+library(ggplot2)
+
+ggplot() +
+  geom_point(data = TCC_nondeveloping,
+             aes(x = lon, y = lat),
+             color = "grey60", alpha = 0.4, size = 0.7) +
+  geom_point(data = TCC_developing_12h,
+             aes(x = lon, y = lat),
+             color = "red", alpha = 0.7, size = 0.8) +
+  coord_equal(xlim = c(-180, 180), ylim = c(-40, 40)) +
+  theme_minimal() +
+  labs(x = "Longitude", y = "Latitude",
+       title = "Locations of Tropical Cloud Centers Around Global Basins",
+       subtitle = "Red = Developing systems, Grey = Non-developing systems")
+
+```
+
+
+
+# Prep dataset for geoplotting
+```{r}
+# optional: wrap 180/-180 seam
+wrap_lon <- function(x){
+  x <- ifelse(x > 180, x - 360, x)
+  x <- ifelse(x <= -180, x + 360, x)
+  ifelse(abs(x - 180) < 1e-9, 179.999, x)
+}
+TCC_developing_12h$lon  <- wrap_lon(TCC_developing_12h$lon)
+TCC_nondeveloping$lon   <- wrap_lon(TCC_nondeveloping$lon)
+
+# (Optional) downsample non-developing to reduce overplot
+set.seed(1)
+nondev_bg <- if (nrow(TCC_nondeveloping) > 15000)
+  TCC_nondeveloping[sample(nrow(TCC_nondeveloping), 15000), ] else TCC_nondeveloping
+
+
+```
+
+
+# Plot +  basemap 
+
+## Function
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# helper: wrap 180/-180 seam (leave as-is if already wrapped)
+wrap_lon <- function(x){
+  x <- ifelse(x > 180, x - 360, x)
+  x <- ifelse(x <= -180, x + 360, x)
+  ifelse(abs(x - 180) < 1e-9, 179.999, x)
+}
+
+# small helper to conditionally add a layer
+add_if <- function(cond, layer) if (cond) layer else NULL
+
+#' Plot Tropical Cloud Centers (TCCs)
+#'
+#' @param dev_df          data.frame of developing TCCs with columns lon, lat
+#' @param nondev_df       data.frame of non-developing TCCs with columns lon, lat
+#' @param show            "both", "dev", or "nondev"
+#' @param dev_geom        "points", "density", "both", or "none"
+#' @param nondev_geom     "points", "density", "both", or "none"
+#' @param alpha_pts_dev   point opacity for developing
+#' @param alpha_pts_non   point opacity for non-developing
+#' @param alpha_den_dev   density opacity for developing
+#' @param alpha_den_non   density opacity for non-developing
+#' @param size_pts_dev    point size for developing
+#' @param size_pts_non    point size for non-developing
+#' @param bins_den        number of density bins (contours)
+#' @param col_dev         point colour for developing
+#' @param col_non         point colour for non-developing
+#' @param fill_den_dev    2-col vector c(low, high) for dev density fill
+#' @param fill_den_non    2-col vector c(low, high) for nondev density fill
+#' @param sample_non      optional integer; if set, downsample non-developing points
+#' @param xlim_deg, ylim_deg axis limits in degrees
+#' @param draw_coast      TRUE to draw coastlines
+#'
+plot_tcc <- function(
+  dev_df, nondev_df,
+  show = c("both","dev","nondev"),
+  dev_geom = c("both","points","density","none"),
+  nondev_geom = c("points","density","both","none"),
+  alpha_pts_dev = 0.85, alpha_pts_non = 0.15,
+  alpha_den_dev = 0.18, alpha_den_non = 0.10,
+  size_pts_dev  = 0.8,  size_pts_non  = 0.6,
+  bins_den = 30,
+  col_dev = "red3", col_non = "darkblue",
+  fill_den_dev = c("white","red3"),
+  fill_den_non = c("white","darkblue"),
+  sample_non = NULL,
+  xlim_deg = c(-180, 180),
+  ylim_deg = c(-100, 100),
+  draw_coast = TRUE,
+  coast_outline_size=0.45,
+  title = "Tropical Cloud Center (TCC) Locations from 1982-2010",
+  subtitle = "Tuned by show/geom/alpha knobs (points and/or densities for each class)"
+){
+  # match args
+  show        <- match.arg(show)
+  dev_geom    <- match.arg(dev_geom)
+  nondev_geom <- match.arg(nondev_geom)
+
+  # wrap longitudes (safe if already wrapped)
+  if (!is.null(dev_df) && nrow(dev_df))  dev_df$lon   <- wrap_lon(dev_df$lon)
+  if (!is.null(nondev_df) && nrow(nondev_df)) nondev_df$lon <- wrap_lon(nondev_df$lon)
+
+  # optional downsample for non-developing
+  if (!is.null(sample_non) && !is.null(nondev_df) && nrow(nondev_df) > sample_non) {
+    set.seed(1)
+    nondev_df <- nondev_df %>% slice_sample(n = sample_non)
+  }
+
+  # which groups to show
+  show_dev    <- show %in% c("both","dev")     && !is.null(dev_df)    && nrow(dev_df)    > 0
+  show_nondev <- show %in% c("both","nondev")  && !is.null(nondev_df) && nrow(nondev_df) > 0
+
+  p <- ggplot() +
+    theme_void() +
+    coord_fixed(xlim = xlim_deg, ylim = ylim_deg, expand = FALSE) +
+    theme(
+      legend.position = "none",
+      plot.title    = element_text(face = "bold", size = 23, hjust = 0),
+      plot.subtitle = element_text(size = 16, hjust = 0)
+    )
+
+    # coastlines under everything
+  p <- p + add_if(draw_coast, borders("world", colour = "black", fill = NA, size = coast_outline_size))
+
+  # --- NON-DEVELOPING layers (usually faint background) ---
+  # density first (backdrop), then points — so points sit on top
+  if (show_nondev && nondev_geom %in% c("density","both")) {
+    p <- p +
+      stat_density_2d(
+        data = nondev_df,
+        aes(x = lon, y = lat, fill = after_stat(level)),
+        geom = "polygon", colour = NA, bins = bins_den, alpha = alpha_den_non
+      ) +
+      scale_fill_gradient(low = fill_den_non[1], high = fill_den_non[2])
+  }
+  if (show_nondev && nondev_geom %in% c("points","both")) {
+    p <- p +
+      geom_point(
+        data = nondev_df,
+        aes(lon, lat),
+        size = size_pts_non, alpha = alpha_pts_non, color = col_non
+      )
+  }
+
+  # --- DEVELOPING layers (foreground) ---
+  if (show_dev && dev_geom %in% c("density","both")) {
+    p <- p +
+      stat_density_2d(
+        data = dev_df,
+        aes(x = lon, y = lat, fill = after_stat(level)),
+        geom = "polygon", colour = NA, bins = bins_den, alpha = alpha_den_dev
+      ) +
+      scale_fill_gradient(low = fill_den_dev[1], high = fill_den_dev[2])
+  }
+  if (show_dev && dev_geom %in% c("points","both")) {
+    p <- p +
+      geom_point(
+        data = dev_df,
+        aes(lon, lat),
+        size = size_pts_dev, alpha = alpha_pts_dev, color = col_dev
+      )
+  }
+
+  p + labs(
+    title    = title,
+    subtitle = subtitle,
+    caption = "Data: Wijnands, Qian & Kuleshov (2016), Mon. Wea. Rev. 144(12):4605–4619"
+  ) + 
+theme(
+  plot.caption = element_text(size = 9.5, colour = "grey30", hjust = 0),
+  plot.caption.position = "plot",     # puts caption below panel
+  plot.margin = margin(6, 10, 12, 10) # add a bit of bottom space
+)
+}
+
+```
+
+## [FINAL PLOT USED!] 1. Both dev and non-dev, points only 
+
+```{r}
+# 1) Both classes, points only
+ops_translation = 0.2
+p=plot_tcc(TCC_developing_12h, TCC_nondeveloping,
+         show="both", dev_geom="points", nondev_geom="points",
+         alpha_pts_dev=0.37+ops_translation, alpha_pts_non=0.12+ops_translation,
+         sample_non=15000, coast_outline_size = 1.3,
+         col_non='blue3',
+         subtitle=sprintf("%d developing TCCs (red), %d non-developing TCCs (blue).",
+                          nrow(TCC_developing_12h), nrow(TCC_nondeveloping)),
+         title = sprintf("%d Tropical Cloud Center (TCC) Locations from 1982-2010",
+                         nrow(TCC_developing_12h) + nrow(TCC_nondeveloping))
+)
+
+p
+
+
+
+
+ggsave(here("output", "tc_intro_and_challenge_plots", "tcc_map.png"),
+       p, width = 15, height = 8, dpi = 150, bg = "white")
+
+```
+
+```{r}
+list.files(here("output", "tc_intro_and_challenge_plots"))
+```
+
+
+
+
+## 2. Developing: density + points; Non-developing: points only (faint)
+
+```{r}
+# 2) Developing: density + points; Non-developing: points only (faint)
+plot_tcc(TCC_developing_12h,
+         TCC_nondeveloping,
+         show="both", dev_geom="both", nondev_geom="both",
+         alpha_den_dev=.8, alpha_pts_dev=.75, alpha_pts_non=.10, sample_non=12000, alpha_den_non=0.3)
+```
+## 3. Developing only, density heatmap
+
+```{r}
+# 3) Developing only, density heatmap
+plot_tcc(TCC_developing_12h, NULL,
+         show="dev",
+         dev_geom="density",
+         fill_den_dev=c("white","red3"),
+         alpha_den_dev=0.05,
+         bins_den=55)
+```
+
+## 4. Non-developing only, density + points (monochrome)
+
+```{r}
+# 4) Non-developing only, density + points (monochrome)
+plot_tcc(NULL, TCC_nondeveloping,
+         show="nondev", nondev_geom="both",
+         col_non="grey20", fill_den_non=c("white","grey50"), alpha_pts_non=.15)
+```
+
+## Self try
+```{r}
+# 3) Developing only, density heatmap
+plot_tcc(TCC_developing_12h, NULL,
+         show="dev",
+         dev_geom="both",
+         fill_den_dev=c("white","red3"),
+         alpha_pts_dev=0.2,
+         alpha_den_dev=0.07,
+         bins_den=65,
+         coast_outline_size = 1,
+         subtitle=sprintf("%d TCCs that develop into a TC.", nrow(TCC_developing_12h)))
+```
+
+```{r}
+# 3) Non-Developing only, density heatmap
+plot_tcc(NULL, TCC_nondeveloping,
+         show="nondev",
+         nondev_geom="density",
+         fill_den_non=c("white","darkblue"),
+         alpha_den_non=0.15,
+         bins_den=35)
+```
+
+
+```{r}
+
+SNR_demo = function(beta){
+  
+  x=seq(-4,4,0.05)
+  
+}
+```
+
+
+
+

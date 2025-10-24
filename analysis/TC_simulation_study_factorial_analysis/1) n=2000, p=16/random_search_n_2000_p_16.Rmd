@@ -1,0 +1,1559 @@
+---
+title: "TC_sim_factorial_analysis_RS"
+author: "Keith Howen"
+date: "2025-07-14"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+source(here("lib", "preprocessing_v2.R"))
+
+source(here("lib", "probit_gibbs.R"))
+source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+
+library(mvnTest)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+```
+
+## Set path for data
+
+```{r}
+list.files(here("data"))
+```
+
+```{r}
+data_path = here("data", "envDataset_12h_10x10_with_mask.csv")
+```
+
+# 💻 Import & fix NA basin value
+
+```{r}
+# import the data
+data = read.csv(data_path)
+
+# fix basin NA category first (NA missing to "NA") and
+# convert it into a factor
+# (but not yet encoded yet)
+data.NA.fixed = fix_NA_value_and_refactor_basin(data)
+```
+
+
+
+# ____
+# ✓ C1: Corr(X1,X2)=0, high s/n
+
+## Read synthetic dataset
+
+```{r}
+
+y.c1 = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "y.c1.rds"))
+
+
+# save design matrix of candidate variables
+X.c1 = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "X.c1.rds"))
+
+```
+
+
+```{r}
+round(cor(X.c1), 5)
+```
+## Perform the MCMC RS
+
+```{r}
+gibbs.RS.c1 =
+              Gibbs.random.search.basin(
+                       rep(1, ncol(X.c1)),
+                       #v02,
+                       data.frame(cbind(X.c1, y.c1)),
+                       burnin=200,
+                       iter=1000,
+                       penalty='BIC')
+
+
+rel.freq.inference(gibbs.RS.c1, CUTOFF=0.5)
+```
+
+```{r}
+gibbs.RS.c1.best.Xs = colnames(X.c1)[
+  as.logical(find_MAP(gibbs.RS.c1))
+]
+
+gibbs.RS.c1.best.Xs
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c1.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c1, y.c1)), gibbs.RS.c1)
+)
+
+gibbs.RS.c1.best.Xs.BIC
+
+saveRDS(gibbs.RS.c1.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c1.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c1.rel.freqs = rel.freq.inference(gibbs.RS.c1, CUTOFF=0.5)
+
+saveRDS(gibbs.RS.c1,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c1.rds"))
+
+
+saveRDS(gibbs.RS.c1.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c1.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c1.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c1.best.Xs.rds"))
+
+```
+
+# ____
+# ✓ C2: Corr(X1,X2)=0.5, high s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c2.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c2.rds"))
+
+names(result.c2.read)
+
+X.c2 = result.c2.read$X.syn
+y.c2 = result.c2.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c2)
+table(y.c2)
+round(cor(X.c2), 5)
+
+```
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c2 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c2)),
+    data.frame(cbind(X.c2, y.c2)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c2, CUTOFF=0.5)
+
+```
+```{r}
+gibbs.RS.c2.best.Xs = colnames(X.c2)[
+  as.logical(find_MAP(gibbs.RS.c2))
+]
+
+gibbs.RS.c2.best.Xs
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c2.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c2, y.c2)), gibbs.RS.c2)
+)
+
+gibbs.RS.c2.best.Xs.BIC
+
+saveRDS(gibbs.RS.c2.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c2.best.Xs.BIC.rds"))
+
+```
+
+
+
+
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c2.rel.freqs = rel.freq.inference(gibbs.RS.c2, CUTOFF=0.5)
+
+saveRDS(gibbs.RS.c2,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c2.rds"))
+
+
+saveRDS(gibbs.RS.c2.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c2.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c2.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c2.best.Xs.rds"))
+
+```
+
+
+# ____
+# ✓ C3: Corr(X1,X2)=0.9, high s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c3.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c3.rds"))
+
+names(result.c3.read)
+
+X.c3 = result.c3.read$X.syn
+y.c3 = result.c3.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c3)
+table(y.c3)
+round(cor(X.c3), 5)
+
+```
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c3 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c3)),
+    data.frame(cbind(X.c3, y.c3)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c3, CUTOFF=0.5)
+
+```
+
+```{r}
+
+gibbs.RS.c3.best.Xs = colnames(X.c3)[
+  as.logical(find_MAP(gibbs.RS.c3))
+]
+
+gibbs.RS.c3.best.Xs
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c3.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c3, y.c3)), gibbs.RS.c3)
+)
+
+gibbs.RS.c3.best.Xs.BIC
+
+saveRDS(gibbs.RS.c3.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c3.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c3.rel.freqs = rel.freq.inference(gibbs.RS.c3, CUTOFF=0.5)
+
+saveRDS(gibbs.RS.c3,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c3.rds"))
+
+
+saveRDS(gibbs.RS.c3.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c3.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c3.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c3.best.Xs.rds"))
+
+```
+
+
+# ____
+# ✓ C4: Corr(X1,X2)= -0.5, high s/n
+
+## Read Synthetic Dataset
+
+```{r}
+
+result.c4.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c4.rds"))
+
+names(result.c4.read)
+
+X.c4 = result.c4.read$X.syn
+y.c4 = result.c4.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c4)
+table(y.c4)
+round(cor(X.c4), 5)
+
+summary(result.c4.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c4 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c4)),
+    data.frame(cbind(X.c4, y.c4)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c4, CUTOFF=0.5)
+
+
+
+colnames(X.c4)[
+  as.logical(find_MAP(gibbs.RS.c4))
+]
+
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c4.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c4, y.c4)), gibbs.RS.c4)
+)
+
+gibbs.RS.c4.best.Xs.BIC
+
+saveRDS(gibbs.RS.c4.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c4.best.Xs.BIC.rds"))
+
+```
+
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c4.rel.freqs = rel.freq.inference(gibbs.RS.c4, CUTOFF=0.5)
+
+gibbs.RS.c4.best.Xs = colnames(X.c4)[
+  as.logical(find_MAP(gibbs.RS.c4))
+]
+
+saveRDS(gibbs.RS.c4,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c4.rds"))
+
+
+saveRDS(gibbs.RS.c4.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c4.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c4.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c4.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✓  C5: Corr(X1,X2)= -0.9, high s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c5.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c5.rds"))
+
+names(result.c5.read)
+
+X.c5 = result.c5.read$X.syn
+y.c5 = result.c5.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c5)
+table(y.c5)
+round(cor(X.c5), 5)
+
+summary(result.c5.read$mod)
+
+```
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c5 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c5)),
+    data.frame(cbind(X.c5, y.c5)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c5, CUTOFF=0.5)
+
+
+
+colnames(X.c5)[
+  as.logical(find_MAP(gibbs.RS.c5))
+]
+
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c5.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c5, y.c5)), gibbs.RS.c5)
+)
+
+gibbs.RS.c5.best.Xs.BIC
+
+saveRDS(gibbs.RS.c5.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c5.best.Xs.BIC.rds"))
+
+```
+
+
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c5.rel.freqs = rel.freq.inference(gibbs.RS.c5, CUTOFF=0.5)
+
+gibbs.RS.c5.best.Xs = colnames(X.c5)[
+  as.logical(find_MAP(gibbs.RS.c5))
+]
+
+saveRDS(gibbs.RS.c5,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c5.rds"))
+
+
+saveRDS(gibbs.RS.c5.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c5.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c5.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c5.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔ C6: Corr(X1,X2)=0, moderate s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c6.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c6.rds"))
+
+names(result.c6.read)
+
+X.c6 = result.c6.read$X.syn
+y.c6 = result.c6.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c6)
+table(y.c6)
+round(cor(X.c6), 5)
+summary(result.c6.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c6 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c6)),
+    data.frame(cbind(X.c6, y.c6)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c6, CUTOFF=0.5)
+
+
+
+colnames(X.c6)[
+  as.logical(find_MAP(gibbs.RS.c6))
+]
+
+
+```
+
+```{r}
+
+gibbs.RS.c6.best.Xs = colnames(X.c6)[
+  as.logical(find_MAP(gibbs.RS.c6))
+]
+
+gibbs.RS.c6.best.Xs
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c6.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c6, y.c6)), gibbs.RS.c6)
+)
+
+gibbs.RS.c6.best.Xs.BIC
+
+saveRDS(gibbs.RS.c6.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c6.best.Xs.BIC.rds"))
+
+```
+
+
+
+## Save samples & relative frequencies & best model
+
+```{r}
+
+gibbs.RS.c6.rel.freqs = rel.freq.inference(gibbs.RS.c6, CUTOFF=0.5)
+
+saveRDS(gibbs.RS.c6,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c6.rds"))
+
+
+saveRDS(gibbs.RS.c6.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c6.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c6.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c6.best.Xs.rds"))
+
+
+```
+
+
+
+# ____
+# ✔ C7: Corr(X1,X2)=0.5, moderate s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c7.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c7.rds"))
+
+names(result.c7.read)
+
+X.c7 = result.c7.read$X.syn
+y.c7 = result.c7.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c7)
+table(y.c7)
+round(cor(X.c7), 5)
+summary(result.c7.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c7 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c7)),
+    data.frame(cbind(X.c7, y.c7)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c7, CUTOFF=0.5)
+
+```
+
+
+```{r}
+
+gibbs.RS.c7.best.Xs = colnames(X.c7)[
+  as.logical(find_MAP(gibbs.RS.c7))
+]
+
+gibbs.RS.c7.best.Xs
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c7.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c7, y.c7)), gibbs.RS.c7)
+)
+
+gibbs.RS.c7.best.Xs.BIC
+
+saveRDS(gibbs.RS.c7.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c7.best.Xs.BIC.rds"))
+
+```
+
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c7.rel.freqs = rel.freq.inference(gibbs.RS.c7, CUTOFF=0.5)
+
+saveRDS(gibbs.RS.c7,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c7.rds"))
+
+
+saveRDS(gibbs.RS.c7.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c7.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c7.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c7.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔ C8: Corr(X1,X2)=0.9, moderate s/n
+
+## Read synthetic dataset
+```{r}
+
+result.c8.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c8.rds"))
+
+names(result.c8.read)
+
+X.c8 = result.c8.read$X.syn
+y.c8 = result.c8.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c8)
+table(y.c8)
+round(cor(X.c8), 5)
+summary(result.c8.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c8 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c8)),
+    data.frame(cbind(X.c8, y.c8)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c8, CUTOFF=0.5)
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c8.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c8, y.c8)), gibbs.RS.c8)
+)
+
+gibbs.RS.c8.best.Xs.BIC
+
+saveRDS(gibbs.RS.c8.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c8.best.Xs.BIC.rds"))
+
+```
+
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c8.rel.freqs = rel.freq.inference(gibbs.RS.c8, CUTOFF=0.5)
+
+
+gibbs.RS.c8.best.Xs = colnames(X.c8)[
+  as.logical(find_MAP(gibbs.RS.c8))
+]
+
+gibbs.RS.c8.best.Xs
+
+
+saveRDS(gibbs.RS.c8,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c8.rds"))
+
+
+saveRDS(gibbs.RS.c8.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c8.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c8.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c8.best.Xs.rds"))
+
+
+```
+
+
+# ____
+# ✔ C9: Corr(X1,X2)= -0.5, moderate s/n
+
+
+## Read synthetic dataset
+
+```{r}
+result.c9.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c9.rds"))
+
+names(result.c9.read)
+
+X.c9 = result.c9.read$X.syn
+y.c9 = result.c9.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c9)
+table(y.c9)
+round(cor(X.c9), 5)
+summary(result.c9.read$mod)
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c9 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c9)),
+    data.frame(cbind(X.c9, y.c9)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c9, CUTOFF=0.5)
+
+```
+
+## Find BIC Minimizer && Save it
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c9.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c9, y.c9)), gibbs.RS.c9)
+)
+
+gibbs.RS.c9.best.Xs.BIC
+
+saveRDS(gibbs.RS.c9.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c9.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c9.rel.freqs = rel.freq.inference(gibbs.RS.c9, CUTOFF=0.5)
+
+
+gibbs.RS.c9.best.Xs = colnames(X.c9)[
+  as.logical(find_MAP(gibbs.RS.c9))
+]
+
+gibbs.RS.c9.best.Xs
+
+
+saveRDS(gibbs.RS.c9,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c9.rds"))
+
+
+saveRDS(gibbs.RS.c9.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c9.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c9.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c9.best.Xs.rds"))
+
+
+```
+
+
+
+# ____
+# ✔ C10: Corr(X1,X2)= -0.9, moderate s/n
+
+
+## Read synthetic dataset
+```{r}
+
+result.c10.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c10.rds"))
+
+names(result.c10.read)
+
+X.c10 = result.c10.read$X.syn
+y.c10 = result.c10.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c10)
+table(y.c10)
+round(cor(X.c10), 5)
+summary(result.c10.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c10 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c10)),
+    data.frame(cbind(X.c10, y.c10)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c10, CUTOFF=0.5)
+
+```
+
+
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c10.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c10, y.c10)), gibbs.RS.c10)
+)
+
+gibbs.RS.c10.best.Xs.BIC
+
+saveRDS(gibbs.RS.c10.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c10.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c10.rel.freqs = rel.freq.inference(gibbs.RS.c10, CUTOFF=0.5)
+
+
+gibbs.RS.c10.best.Xs = colnames(X.c10)[
+  as.logical(find_MAP(gibbs.RS.c10))
+]
+
+gibbs.RS.c10.best.Xs
+
+
+saveRDS(gibbs.RS.c10,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c10.rds"))
+
+
+saveRDS(gibbs.RS.c10.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c10.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c10.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c10.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔  C11: Corr(X1,X2)=0, weak s/n
+
+
+## Read synthetic dataset
+
+```{r}
+
+result.c11.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c11.rds"))
+
+names(result.c11.read)
+
+X.c11 = result.c11.read$X.syn
+y.c11 = result.c11.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c11)
+table(y.c11)
+round(cor(X.c11), 5)
+summary(result.c11.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c11 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c11)),
+    data.frame(cbind(X.c11, y.c11)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c11, CUTOFF=0.5)
+
+```
+
+
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c11.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c11, y.c11)), gibbs.RS.c11)
+)
+
+gibbs.RS.c11.best.Xs.BIC
+
+saveRDS(gibbs.RS.c11.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c11.best.Xs.BIC.rds"))
+
+```
+
+
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c11.rel.freqs = rel.freq.inference(gibbs.RS.c11, CUTOFF=0.5)
+
+
+gibbs.RS.c11.best.Xs = colnames(X.c11)[
+  as.logical(find_MAP(gibbs.RS.c11))
+]
+
+gibbs.RS.c11.best.Xs
+
+
+saveRDS(gibbs.RS.c11,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c11.rds"))
+
+
+saveRDS(gibbs.RS.c11.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c11.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c11.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c11.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔ C12: Corr(X1,X2)=0.5, weak s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c12.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c12.rds"))
+
+names(result.c12.read)
+
+X.c12 = result.c12.read$X.syn
+y.c12 = result.c12.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c12)
+table(y.c12)
+round(cor(X.c12), 5)
+summary(result.c12.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c12 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c12)),
+    data.frame(cbind(X.c12, y.c12)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c12, CUTOFF=0.5)
+
+```
+
+
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c12.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c12, y.c12)), gibbs.RS.c12)
+)
+
+gibbs.RS.c12.best.Xs.BIC
+
+saveRDS(gibbs.RS.c12.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c12.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c12.rel.freqs = rel.freq.inference(gibbs.RS.c12, CUTOFF=0.5)
+
+
+gibbs.RS.c12.best.Xs = colnames(X.c12)[
+  as.logical(find_MAP(gibbs.RS.c12))
+]
+
+gibbs.RS.c12.best.Xs
+
+
+saveRDS(gibbs.RS.c12,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c12.rds"))
+
+
+saveRDS(gibbs.RS.c12.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c12.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c12.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c12.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔ C13: Corr(X1,X2)=0.9, weak s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c13.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c13.rds"))
+
+names(result.c13.read)
+
+X.c13 = result.c13.read$X.syn
+y.c13 = result.c13.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c13)
+table(y.c13)
+round(cor(X.c13), 5)
+summary(result.c13.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c13 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c13)),
+    data.frame(cbind(X.c13, y.c13)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c13, CUTOFF=0.5)
+
+```
+
+
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c13.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c13, y.c13)), gibbs.RS.c13)
+)
+
+gibbs.RS.c13.best.Xs.BIC
+
+saveRDS(gibbs.RS.c13.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c13.best.Xs.BIC.rds"))
+
+```
+
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c13.rel.freqs = rel.freq.inference(gibbs.RS.c13, CUTOFF=0.5)
+
+
+gibbs.RS.c13.best.Xs = colnames(X.c13)[
+  as.logical(find_MAP(gibbs.RS.c13))
+]
+
+gibbs.RS.c13.best.Xs
+
+
+saveRDS(gibbs.RS.c13,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c13.rds"))
+
+
+saveRDS(gibbs.RS.c13.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c13.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c13.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c13.best.Xs.rds"))
+
+
+```
+
+
+# ____
+# ✔  C14: Corr(X1,X2)= -0.5, weak s/n
+
+## Read synthetic dataset
+
+```{r}
+
+result.c14.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c14.rds"))
+
+names(result.c14.read)
+
+X.c14 = result.c14.read$X.syn
+y.c14 = result.c14.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c14)
+table(y.c14)
+round(cor(X.c14), 5)
+summary(result.c14.read$mod)
+
+```
+
+
+## Perform the MCMC RS
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c14 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c14)),
+    data.frame(cbind(X.c14, y.c14)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c14, CUTOFF=0.5)
+
+```
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c14.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c14, y.c14)), gibbs.RS.c14)
+)
+
+gibbs.RS.c14.best.Xs.BIC
+
+saveRDS(gibbs.RS.c14.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c14.best.Xs.BIC.rds"))
+
+```
+
+
+## Save samples & relative frequencies
+
+```{r}
+
+gibbs.RS.c14.rel.freqs = rel.freq.inference(gibbs.RS.c14, CUTOFF=0.5)
+
+
+gibbs.RS.c14.best.Xs = colnames(X.c14)[
+  as.logical(find_MAP(gibbs.RS.c14))
+]
+
+gibbs.RS.c14.best.Xs
+
+
+saveRDS(gibbs.RS.c14,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c14.rds"))
+
+
+saveRDS(gibbs.RS.c14.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c14.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c14.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c14.best.Xs.rds"))
+
+
+```
+
+# ____
+# ✔ C15: Corr(X1,X2)= -0.9, weak s/n
+
+## Read synthetic dataset
+```{r}
+
+result.c15.read = readRDS(
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "result.c15.rds"))
+
+names(result.c15.read)
+
+X.c15 = result.c15.read$X.syn
+y.c15 = result.c15.read$y.syn
+
+# verifying synthetic dataset properties
+dim(X.c15)
+table(y.c15)
+round(cor(X.c15), 5)
+summary(result.c15.read$mod)
+
+```
+
+## Perform the MCMC RS
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c15 <- Gibbs.random.search.basin(
+    rep(1, ncol(X.c15)),
+    data.frame(cbind(X.c15, y.c15)),
+    burnin = 200,
+    iter = 1000,
+    penalty = 'BIC'
+  )
+)
+
+
+rel.freq.inference(gibbs.RS.c15, CUTOFF=0.5)
+
+```
+## Find BIC Minimizer && Save It
+
+```{r}
+
+suppressWarnings(
+  gibbs.RS.c15.best.Xs.BIC <- find_BIC_minimizer(data.frame(cbind(X.c15, y.c15)), gibbs.RS.c15)
+)
+
+gibbs.RS.c15.best.Xs.BIC
+
+saveRDS(gibbs.RS.c15.best.Xs.BIC,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c15.best.Xs.BIC.rds"))
+
+```
+
+## Save samples & relative frequencies
+
+
+```{r}
+
+gibbs.RS.c15.rel.freqs = rel.freq.inference(gibbs.RS.c15, CUTOFF=0.5)
+
+
+gibbs.RS.c15.best.Xs = colnames(X.c15)[
+  as.logical(find_MAP(gibbs.RS.c15))
+]
+
+gibbs.RS.c15.best.Xs
+
+
+saveRDS(gibbs.RS.c15,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c15.rds"))
+
+
+saveRDS(gibbs.RS.c15.rel.freqs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c15.rel.freqs.rds"))
+
+saveRDS(gibbs.RS.c15.best.Xs,
+        here("output",
+             "simulation_factorial_analysis_outputs",
+             "gibbs.RS.c15.best.Xs.rds"))
+
+
+```
+
+
+
+# Misc exploration of TC genesis dataset.
+
+```{r}
+
+DH.test(
+  data[,colnames(data)[!colnames(data) %in% c("basin", "TC_genesis")]],
+  qqplot = TRUE
+)
+
+```
+
+
+
+
+
+
+
+

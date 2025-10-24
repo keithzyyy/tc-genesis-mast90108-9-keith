@@ -1,0 +1,343 @@
+---
+title: "TC_genesis_dataset_challenges"
+author: "Keith Howen"
+date: "2025-08-06"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+```{r}
+set.seed(123)
+```
+
+
+
+# 💻 Working Directory Setup using `here()`
+Use `here()` to *standardize the working directory between R markdown and
+R console* as opposed to using `getwd()` (and `setwd()`), at the slight
+inconveniences of importing the `here` library, using `here()` to write file
+paths, and manually specify paths for files outside the working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+## Check working directory
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+```{r}
+
+# one hot encoding with intercept
+source(here("lib", "preprocessing_v3.R"))
+# full rank encoding with NO intercept
+source(here("lib", "preprocessing_v2.R"))
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+library(mvtnorm)
+#library(truncnorm)
+#library(Matrix)
+library(ggplot2)
+library(cowplot)
+#library(splitstackshape)
+#install.packages('reshape2')
+library(reshape2)
+
+# for HL test
+install.packages('glmtoolbox')
+library(glmtoolbox)
+
+
+```
+
+
+## Set path for data
+
+```{r}
+list.files(here("data"))
+```
+
+```{r}
+data_path = here("data", "envDataset_12h_10x10_with_mask.csv")
+```
+
+# 💻 Import & fix NA basin value
+
+```{r}
+# import the data
+data = read.csv(data_path)
+
+# fix basin NA category first (NA missing to "NA") and
+# convert it into a factor
+# (but not yet encoded yet)
+data.NA.fixed = fix_NA_value_and_refactor_basin(data)
+data.NA.fixed.no.basin = data.NA.fixed[colnames(data.NA.fixed) != "basin"]
+data.NA.fixed.no.TC = data.NA.fixed.no.basin[colnames(data.NA.fixed.no.basin) != "TC_genesis"]
+
+X.colnames = colnames(data.NA.fixed.no.TC)
+
+```
+
+
+# Challenge: scale of variables
+```{r}
+hist(apply(data.NA.fixed.no.basin, MARGIN=2, FUN=sd),
+     breaks=30,
+     col='red', freq=FALSE)
+```
+
+
+
+# Challenge: large n, p
+```{r}
+str(data.NA.fixed.no.TC)
+```
+
+
+# Challenge: high correlation
+
+Idea: obtain most correlated pairs
+
+```{r}
+
+tc.cor.matrix = cor(data.NA.fixed.no.TC)
+
+# ignore diagonals and upper triangulars
+tc.cor.matrix[upper.tri(tc.cor.matrix, diag=TRUE)] = NA
+
+# melt corr matrix into a df
+tc.corr.pairs = melt(tc.cor.matrix)
+
+# remove NA values i.e. redundant pairs and diagonals
+tc.corr.pairs = tc.corr.pairs[!is.na(tc.corr.pairs$value), ]
+
+tc.corr.pairs
+
+
+tc.corr.pairs[order(tc.corr.pairs$value, decreasing = TRUE), ]
+
+
+```
+
+
+# Univariate signals.
+
+## 1-var logistic model, get all residual deviance
+
+```{r}
+
+# store variable names, drop in deviance (against the null), and coeff est
+vars = rep(NaN, length(X.colnames))
+deviance.drops = rep(NaN, length(X.colnames))
+estimates = rep(NaN, length(X.colnames))
+
+for (i in 1:length(X.colnames)){
+  
+  # fit a 1-var model
+  var = X.colnames[i]
+  f = as.formula(paste0("TC_genesis ~", var))
+  mod.s = summary(
+    glm(f, family="binomial",data=data.NA.fixed.no.basin)
+  )
+  
+  # store var name, deviance drop, coefficient estimate
+  vars[i] = var
+  deviance.drops[i] = mod.s$null.deviance - mod.s$deviance
+  estimates[i] = mod.s$coefficients[2,"Estimate"]
+  
+}
+
+# order by drop in deviance against null deviance, in decending order.
+univar.screening = data.frame(vars=vars, deviance.drops=deviance.drops, estimates=estimates)
+univar.screening = univar.screening[order(univar.screening$deviance.drops, decreasing=TRUE),]
+
+univar.screening
+
+```
+
+```{r}
+
+univar.screening
+
+```
+
+
+```{r}
+
+summary(
+    glm(as.formula(paste0("TC_genesis ~", "vertical_wind_shear_between_200_hPa_and_700_hPa", "+", "vertical_wind_shear_between_300_hPa_and_600_hPa")), family="binomial",data=data.NA.fixed.no.basin)
+)
+
+cor(data.NA.fixed.no.basin$vertical_wind_shear_between_200_hPa_and_700_hPa,
+    data.NA.fixed.no.basin$vertical_wind_shear_between_300_hPa_and_600_hPa)
+
+```
+
+
+
+```{r}
+
+plot(data.NA.fixed.no.basin$absolute_vorticity_averaged, data.NA.fixed.no.basin$TC_genesis)
+
+```
+
+
+
+
+# Boxplots
+```{r}
+boxplot_var_by_TC_genesis <- function(data, col_var, std = TRUE,
+                                      cols = c("0" = "#0B7D0B",  # dark green
+                                               "1" = "#D62728"), # red
+                                      show_trend = TRUE,
+                                      median_width = 0.55,
+                                      show_legend=TRUE) {
+  library(dplyr); library(ggplot2)
+
+  df <- data
+  if (std) {
+    df[, colnames(df) != "TC_genesis"] <- scale(df[, colnames(df) != "TC_genesis"])
+  }
+  
+  
+  # set TC_genesis to be a factor, NOT continuous
+  df$TC_genesis <- factor(df$TC_genesis, levels = c(0, 1))
+
+  # group medians
+  meds <- df %>%
+    group_by(TC_genesis) %>%
+    summarise(med = median(.data[[col_var]], na.rm = TRUE), .groups = "drop")
+
+  # for optional trend line between the two medians
+  seg <- if (nrow(meds) == 2) data.frame(
+    x = meds$TC_genesis, y = meds$med, grp = 1
+  ) else NULL
+
+  # col_var is not a literal, so need to use .data[[..]]
+  ggplot(df, aes(x = TC_genesis, y = .data[[col_var]])) +
+    
+    # colored boxes by class
+    geom_boxplot(aes(fill = TC_genesis), outlier.alpha = 0.25) +
+    
+    # optional: show a “trend” line connecting medians
+    { if (show_trend && !is.null(seg))
+        geom_path(data = seg, aes(x = x, y = y, group = grp),
+                  inherit.aes = FALSE, linetype = "solid", linewidth = 0.7,
+                  color = "blue",
+                  size=0.2,
+                  lineend = "round"
+                  ) } +
+    
+    coord_flip() +
+    
+    scale_fill_manual(values = cols, name = "TC_genesis",
+                      labels = c("0 = no genesis", "1 = genesis")) +
+    
+    scale_color_manual(values = cols, guide = "none") +
+    
+    labs(x = "TC_genesis", y = col_var) +
+    
+    theme_minimal(base_size = 13) +
+    
+    theme(legend.position = ifelse(show_legend, "top", "none"))
+}
+```
+
+
+## Geopotential
+
+
+```{r}
+cols = grep('geopotential', colnames(data.NA.fixed.no.basin), value=TRUE)
+
+plist = list()
+
+#plist[[1]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin, cols[1], show_legend=TRUE)
+
+for (i in 1:length(cols)){
+  plist[[i]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,
+                                                     cols[i],
+                                                     show_legend=FALSE)
+}
+
+p = plot_grid(plotlist = plist,
+          ncol = 3, nrow=ceiling(length(plist)/3),
+          rel_widths = c(2, 2, 2),
+          rel_heights=c(2,2,2))
+
+p
+
+ggsave(here("output", "tc_challenge_plots", "boxplots_geopotential.png"),
+        plot = p, width = 12, height = 10, units = "in", dpi = 300)
+
+
+```
+
+## Vertical wind shear
+
+```{r}
+cols = grep('vertical_wind_shear', colnames(data.NA.fixed.no.basin), value=TRUE)
+
+cols = c(head(cols), tail(cols))
+
+plist = list()
+
+#plist[[1]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin, cols[1], show_legend=TRUE)
+
+for (i in 1:length(cols)){
+  plist[[i]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,
+                                                     cols[i],
+                                                     show_legend=FALSE)
+}
+
+p = plot_grid(plotlist = plist,
+          ncol = 3, nrow=ceiling(length(plist)/3),
+          rel_widths = c(2, 2, 2),
+          rel_heights=c(2,2,2))
+
+p
+
+ggsave(here("output", "tc_challenge_plots", "boxplots_vertical_wind_shear.png"),
+        plot = p, width = 15, height = 10, units = "in", dpi = 300)
+
+
+```
+
+
+
+## Specific humidity
+
+```{r}
+cols = grep('specific_humidity', colnames(data.NA.fixed.no.basin), value=TRUE)
+
+cols = c(head(cols), tail(cols))
+
+plist = list()
+
+#plist[[1]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin, cols[1], show_legend=TRUE)
+
+for (i in 1:length(cols)){
+  plist[[i]] = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,
+                                                     cols[i],
+                                                     show_legend=FALSE)
+}
+
+p = plot_grid(plotlist = plist,
+          ncol = 3, nrow=ceiling(length(plist)/3),
+          rel_widths = c(2, 2, 2),
+          rel_heights=c(2,2,2))
+p
+
+ggsave(here("output", "tc_challenge_plots", "boxplots_specific_humidity.png"),
+        plot = p, width = 12, height = 10, units = "in", dpi = 300)
+
+
+
+```
+

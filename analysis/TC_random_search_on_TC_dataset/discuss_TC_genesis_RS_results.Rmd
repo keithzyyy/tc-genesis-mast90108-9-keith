@@ -1,0 +1,894 @@
+---
+title: "discuss_TC_genesis_RS_results"
+author: "Keith Howen"
+date: "2025-09-06"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+```{r}
+set.seed(123)
+```
+
+
+
+# 💻 Working Directory Setup using `here()`
+Use `here()` to *standardize the working directory between R markdown and
+R console* as opposed to using `getwd()` (and `setwd()`), at the slight
+inconveniences of importing the `here` library, using `here()` to write file
+paths, and manually specify paths for files outside the working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+## Check working directory
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+```{r}
+
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+#source(here("lib", "simulation_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+source(here("lib", "load_and_preprocess_TC.R"))
+#library(mvtnorm)
+#library(truncnorm)
+#library(Matrix)
+library(ggplot2)
+#library(splitstackshape)
+#install.packages('reshape2')
+library(reshape2)
+
+library(glmnet)
+#install.packages('caret')
+library(caret)
+
+```
+
+
+## Set path for data
+
+```{r}
+list.files(here("data"))
+```
+
+# 💻 Import raw data & fix NA basin value
+
+```{r}
+#data_path = here("data", "envDataset_12h_10x10_with_mask.csv")
+# import the data
+#data = read.csv(data_path)
+
+# fix basin NA category first (NA missing to "NA") and
+# convert it into a factor
+# (but not yet encoded yet)
+#data.NA.fixed = fix_NA_value_and_refactor_basin(data)
+#data.NA.fixed.no.basin = data.NA.fixed[colnames(data.NA.fixed) != "basin"]
+#data.NA.fixed.no.TC = data.NA.fixed.no.basin[colnames(data.NA.fixed.no.basin) != "TC_genesis"]
+
+#X.colnames = colnames(data.NA.fixed.no.TC)
+
+#X = data.NA.fixed.no.TC
+#y = data.NA.fixed.no.basin["TC_genesis"]
+
+```
+
+
+# Import result quantities
+
+## Results from first run
+
+```{r}
+# set dir names
+TC_RESULTS_DIR = here("output", "random_search_TC_dataset_outputs", "RCP_outputs")
+VALIDATION_OUTPUTS_DIR = here("output", "validation_outputs")
+
+
+# relative frequencies
+TC.rel.freqs = readRDS(file.path(TC_RESULTS_DIR, "rel.freqs.rds"))$rel.freqs.non.basin
+TC.rel.freqs.sorted = sort(TC.rel.freqs, decreasing=TRUE)
+
+
+# best var set from BIC minimizer in RS
+TC.BIC.minimizer.rds = readRDS(file.path(TC_RESULTS_DIR, "BIC.minimizer.rds"))
+rs_bic_min_vars = TC.BIC.minimizer.rds$models[[1]]$selected.variables
+
+
+mcmc.samples.tc.genesis = readRDS(here("output", "random_search_TC_dataset_outputs", "RCP_outputs", "gibbs_TC_dataset_results_iter_1.rds")) 
+
+# lasso object
+tc.genesis.lasso.lm = readRDS(file.path(VALIDATION_OUTPUTS_DIR, "cvfit_lasso.rds"))
+  
+
+```
+
+
+
+
+## Results from multiple chains run
+
+```{r}
+
+mcmc.samples.TC.multiple.chains = readRDS(file.path(TC_RESULTS_DIR, "gibbs_TC_dataset_multiple_chains.rds"))
+
+```
+
+```{r}
+
+cat("Number of chains being run: ", length(mcmc.samples.TC.multiple.chains), "\n")
+cat("Dim of samples for chain 1: ", dim(mcmc.samples.TC.multiple.chains[[1]]), "\n")
+cat("Dim of samples for chain 2: ", dim(mcmc.samples.TC.multiple.chains[[2]]), "\n")
+cat("Dim of samples for chain 3: ", dim(mcmc.samples.TC.multiple.chains[[3]]), "\n")
+cat("Dim of samples for chain 4: ", dim(mcmc.samples.TC.multiple.chains[[4]]), "\n")
+
+
+```
+
+# Check diagnostics (using GR)
+
+```{r}
+
+GR_diagnostics <- function(results,
+                           drop_degenerate = TRUE,
+                           trim_last_half = FALSE,
+                           cum_sum = FALSE) {
+  if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+  library(coda)
+  
+  # relative inclusion frequency per var across *all* chains
+  rel_freqs <- colMeans(do.call(rbind, results))
+  
+  keep_idx <- seq_len(ncol(results[[1]]))
+  if (drop_degenerate) {
+    keep_idx <- which(rel_freqs > 0 & rel_freqs < 1)
+  }
+  
+  # compute running inclusion prob per var
+  if (cum_sum){
+    chains_ip <- lapply(results, function(S) {
+      apply(S[, keep_idx, drop = FALSE], 2, function(col) cumsum(col) / seq_along(col))
+    })
+  } else{
+    chains_ip <- lapply(results, function(S)S[, keep_idx])
+  }
+
+  
+  if (trim_last_half){
+    chains_ip <- lapply(chains_ip, function(M) M[floor(nrow(M)/2):nrow(M), , drop = FALSE])
+  }
+  
+  
+  mcmc_list <- mcmc.list(lapply(chains_ip, function(M) mcmc(M)))
+  gr <- gelman.diag(mcmc_list, multivariate = FALSE)$psrf
+  
+  ess <- sapply(1:length(keep_idx), function(j)
+    sum(sapply(results, function(S) coda::effectiveSize(S[, keep_idx[j]]))))
+  
+  list(gr = gr,
+       ess = ess,
+       kept_vars = colnames(results[[1]])[keep_idx],
+       dropped_vars = if (drop_degenerate) colnames(results[[1]])[-keep_idx] else NULL)
+}
+
+
+GR_diagnostics_v2 <- function(results,
+                           split_chains = TRUE,
+                           drop_rule = c("per_chain","global","none"),
+                           rhat_cut = 1.05) {
+  stopifnot(is.list(results), length(results) >= 2)
+  if (!requireNamespace("coda", quietly = TRUE)) install.packages("coda")
+  drop_rule <- match.arg(drop_rule)
+
+  # 1) Collect raw indicator matrices per chain
+  mats <- lapply(results, function(S) {
+    stopifnot(is.matrix(S))
+    S
+  })
+
+  # 2) Split each chain into two halves (BDA3 recommendation)
+  if (split_chains) {
+    mats <- unlist(lapply(mats, function(S) {
+      n <- nrow(S); h <- floor(n/2)
+      list(S[1:h, , drop = FALSE], S[(h+1):n, , drop = FALSE])
+    }), recursive = FALSE)
+  }
+
+  p <- ncol(mats[[1]])
+  vnames <- colnames(mats[[1]])
+
+  # 3) Choose variables to keep (avoid degeneracy)
+  keep <- rep(TRUE, p); why_drop <- rep(NA_character_, p)
+  if (drop_rule != "none") {
+    if (drop_rule == "per_chain") {
+      wvar <- sapply(mats, function(S) apply(S, 2, var))
+      keep <- apply(wvar > 0, 1, all)
+      why_drop[!keep] <- "degenerate_in_some_chain"
+    } else if (drop_rule == "global") {
+      pooled <- do.call(rbind, mats)
+      keep <- apply(pooled, 2, var) > 0
+      why_drop[!keep] <- "degenerate_globally"
+    }
+  }
+  if (!any(keep)) stop("No non-degenerate variables to diagnose.")
+
+  # 4) Build coda mcmc.list from subchains
+  mlist <- coda::mcmc.list(lapply(mats, function(S) coda::mcmc(S[, keep, drop = FALSE])))
+
+  # 5) Univariate GR and ESS (ESS summed across subchains)
+  gr   <- coda::gelman.diag(mlist, multivariate = FALSE)$psrf
+  ess  <- sapply(seq_len(sum(keep)), function(j)
+           sum(sapply(mats, function(S) coda::effectiveSize(S[, j]))))
+
+  out <- data.frame(
+    variable   = vnames[keep],
+    Rhat_point = gr[, "Point est."],
+    Rhat_upper = gr[, "Upper C.I."],
+    ESS_sum    = ess,
+    converged  = gr[, "Point est."] < rhat_cut
+  )
+  rownames(out) <- NULL
+
+  list(
+    table   = out[order(out$Rhat_point, decreasing = TRUE), ],
+    dropped = data.frame(variable = vnames[!keep], reason = why_drop[!keep]),
+    params  = list(split_chains = split_chains, drop_rule = drop_rule, rhat_cut = rhat_cut)
+  )
+}
+
+
+```
+
+## V1: no splitting
+
+```{r}
+mcmc.samples.TC.multiple.chains.diag = GR_diagnostics(mcmc.samples.TC.multiple.chains)
+```
+
+
+## V2: split
+
+```{r}
+mcmc.samples.TC.multiple.chains.diag2 = GR_diagnostics_v2(mcmc.samples.TC.multiple.chains,
+                                                          rhat_cut = 1.1)
+
+
+```
+
+
+```{r}
+names(mcmc.samples.TC.multiple.chains.diag2)
+```
+```{r}
+mcmc.samples.TC.multiple.chains.diag2$dropped
+```
+
+```{r}
+mcmc.samples.TC.multiple.chains.diag2$table
+```
+
+
+```{r}
+mcmc.samples.TC.multiple.chains.diag2$table %>% filter(converged==FALSE)
+```
+
+
+## V2.1: further burn-in, then split
+
+### How many more burn-in samples?
+
+```{r}
+
+
+for(extra_burn in 10*(5:40)){
+  
+  trimmed <- lapply(mcmc.samples.TC.multiple.chains, function(S)
+    S[(extra_burn + 1):nrow(S), , drop = FALSE]
+  )
+  
+  mcmc.samples.TC.multiple.chains.diag2.trimmed = 
+    GR_diagnostics_v2(
+      trimmed,
+      rhat_cut = 1.1)
+  
+  prop_vars_converged = nrow(mcmc.samples.TC.multiple.chains.diag2.trimmed$table %>% filter(converged == TRUE)) /
+    nrow(mcmc.samples.TC.multiple.chains.diag2.trimmed$table)
+  
+  prop_vars_converged = round(prop_vars_converged,2)
+  
+  cat("Proportion of variables converged if burn-in is extended by", extra_burn, ":", prop_vars_converged, "\n")
+  
+}
+
+
+
+```
+
+
+### Perform the diagnostic check.
+
+```{r}
+
+extra_burn <- 60
+
+trimmed <- lapply(mcmc.samples.TC.multiple.chains, function(S)
+  S[(extra_burn + 1):nrow(S), , drop = FALSE]
+)
+
+cat("Dimension of each chain: ", dim(trimmed[[1]]), "\n")
+
+
+mcmc.samples.TC.multiple.chains.diag2.trimmed = 
+  GR_diagnostics_v2(
+    trimmed,
+    rhat_cut = 1.1)
+
+
+mcmc.samples.TC.multiple.chains.diag2.trimmed$table
+
+
+prop_vars_converged = nrow(mcmc.samples.TC.multiple.chains.diag2.trimmed$table %>% filter(converged == TRUE)) /
+  nrow(mcmc.samples.TC.multiple.chains.diag2.trimmed$table)
+
+prop_vars_converged = round(prop_vars_converged,2)
+
+cat("Proportion of variables converged if burn-in is extended by", extra_burn, ":", prop_vars_converged)
+
+
+```
+# Check diagnostics (using contingency tables)
+```{r}
+stationarity_chisq <- function(
+  S,                      # numeric vector (one long chain) OR list of numeric vectors (q chains)
+  k0 = 0,                 # extra burn-in to drop per chain
+  q  = NULL,              # number of sub-sequences (if NULL and S is a vector, chosen automatically)
+  r  = NULL,              # number of intervals (if NULL, chosen automatically)
+  breaks = c("quantile", "equalwidth"),  # how to make r bins
+  min_expected = 5,       # target >= 5 expected counts/cell
+  simulate_p = FALSE,     # if some cells < 5, use Monte Carlo p-value
+  B = 10000               # replicates for Monte Carlo p-value (chisq.test)
+) {
+  breaks <- match.arg(breaks)
+
+  # --- helper: coerce input to list of q sub-sequences, each length K ---
+  to_blocks <- function(S, k0, q) {
+    if (is.list(S)) {
+      # q chains provided
+      chains <- lapply(S, function(x) {
+        stopifnot(is.numeric(x))
+        if (k0 >= length(x)) stop("k0 >= chain length.")
+        x[(k0 + 1):length(x)]
+      })
+      K <- min(sapply(chains, length))
+      if (K < 10) stop("Not enough post-burn draws per chain for splitting.")
+      blocks <- lapply(chains, function(x) x[(length(x) - K + 1):length(x)])
+      list(blocks = blocks, q = length(blocks), K = K)
+    } else {
+      # single long chain: split into q blocks after burn-in
+      x <- as.numeric(S)
+      if (k0 >= length(x)) stop("k0 >= chain length.")
+      x <- x[(k0 + 1):length(x)]
+      if (is.null(q)) {
+        # aim for at least ~100 per block, but ≥ 2 blocks
+        q <- max(2L, min(10L, floor(length(x) / 100)))
+      }
+      K <- floor(length(x) / q)
+      if (K < 10) stop("Not enough draws per block; decrease q or k0.")
+      # take the last q*K draws so blocks are equal length
+      x <- tail(x, q * K)
+      blocks <- split(x, rep(seq_len(q), each = K))
+      list(blocks = blocks, q = q, K = K)
+    }
+  }
+
+  blk <- to_blocks(S, k0 = k0, q = q)
+  blocks <- blk$blocks; q <- blk$q; K <- blk$K
+
+  # --- choose r if missing to satisfy ~>= min_expected expected per cell ---
+  N_total <- q * K
+  if (is.null(r)) {
+    r <- max(2L, min(10L, floor(N_total / (min_expected * q))))
+  }
+
+  # --- define bin edges over pooled S ---
+  pooled <- unlist(blocks, use.names = FALSE)
+  if (breaks == "quantile") {
+    # quantile bins give near-balanced row totals -> helps the 5-per-cell rule
+    probs <- seq(0, 1, length.out = r + 1)
+    # jitter duplicates in extremes to avoid identical breaks
+    qs <- as.numeric(stats::quantile(pooled, probs, type = 7, na.rm = TRUE))
+    eps <- .Machine$double.eps^0.25
+    qs <- unique(qs)  # guard: if r is too large for unique values, reduce r
+    if (length(qs) < r + 1) {
+      r <- length(qs) - 1L
+      if (r < 2) stop("Too few unique values in S to form >=2 bins.")
+    }
+    brks <- if (length(qs) == r + 1) qs else stats::quantile(pooled, seq(0, 1, length.out = r + 1))
+    brks[1]  <- brks[1]  - eps
+    brks[r+1] <- brks[r+1] + eps
+  } else {
+    brks <- seq(min(pooled), max(pooled), length.out = r + 1)
+  }
+
+  # --- build r x q contingency table ---
+  binlab <- function(x) cut(x, breaks = brks, include.lowest = TRUE, right = TRUE)
+  tab <- sapply(blocks, function(b) table(binlab(b)))
+  # ensure matrix with rownames (intervals) and colnames (block index)
+  if (is.null(dim(tab))) tab <- matrix(tab, nrow = r)
+  rownames(tab) <- levels(binlab(pooled))
+  colnames(tab) <- paste0("block_", seq_len(q))
+
+  # --- chi-squared test of independence ---
+  # check expected counts
+  exp_counts <- suppressWarnings(chisq.test(tab)$expected)
+  small <- any(exp_counts < min_expected)
+
+  test <- suppressWarnings(
+    chisq.test(tab, simulate.p.value = simulate_p || small, B = B)
+  )
+
+  list(
+    p_value = unname(test$p.value),
+    statistic = unname(test$statistic),
+    df = unname(test$parameter),
+    small_expected = small,
+    method = if (simulate_p || small) "Chi-squared with simulated p-value" else "Pearson Chi-squared",
+    r = r, q = q, K = K, k0 = k0,
+    breaks = brks,
+    table = tab
+  )
+}
+
+```
+
+## Compute ALL BICs and perform chisq test
+```{r}
+start_time = Sys.time()
+
+S_list <- lapply(trimmed, function(S) {
+  apply(S, 1, function(v) compute.BIC(data.frame(X, y), v))
+})
+
+# CONSIDER SAVING S_List!!!
+
+# no need burn-in -- already calibrated
+out <- stationarity_chisq(S_list, k0 = 0)
+
+end_time = Sys.time()
+cat("Overall time taken (minutes): ",
+      as.numeric(end_time - start_time, units = "mins"),
+      "\n")
+
+```
+
+```{r}
+
+saveRDS(S_list,
+        here("output", "random_search_TC_dataset_outputs", "all_BICs_4_chains.rds"))
+
+```
+
+
+
+
+```{r}
+
+
+#length(S_list[[1]])
+
+plot(S_list[[1]], col=1, type='l', xlab='Iteration', ylab='BIC', lwd=4)
+
+for(i in 2:length(S_list)){
+  lines(S_list[[i]], col=i, xlab='Iteration', ylab='BIC', lwd=4)
+}
+
+
+```
+
+
+
+```{r}
+raftery.diag(as.mcmc(unlist(S_list)))
+```
+## Leaving only 75 samples per chain
+
+```{r}
+stationarity_chisq(S_list, k0 = 665)
+```
+
+
+
+## Thinning to every k-th sample per chain
+CAUTION: this is mostly loss of power (each block has K=106
+K=106 vsK=740), and thinning can hide slow drifts.
+
+It doesn’t prove stationarity.
+
+
+```{r}
+stationarity_chisq(lapply(S_list, function(S){S[seq(1,length(S),by=7)]}), 
+                   k0 = 0)
+```
+
+
+
+```{r}
+stationarity_chisq_v2 <- function(
+  S, k0 = 0, r = NULL,
+  breaks = c("quantile","equalwidth"),
+  blocks_per_chain = 1,   # <— NEW
+  min_expected = 5, simulate_p = FALSE, B = 10000
+){
+  breaks <- match.arg(breaks)
+
+  # Coerce to list of chains
+  chains <- if (is.list(S)) S else list(S)
+  chains <- lapply(chains, function(x){
+    x <- as.numeric(x); if (k0 >= length(x)) stop("k0 >= chain length")
+    x[(k0+1):length(x)]
+  })
+
+  # Split each chain into 'blocks_per_chain' equal blocks
+  split_blocks <- function(x, a){
+    n <- length(x); K <- floor(n / a); if (K < 10) stop("block too short")
+    x <- tail(x, a*K)                                # equalize
+    split(x, rep(seq_len(a), each = K))
+  }
+  blocks_list <- lapply(chains, split_blocks, a = blocks_per_chain)
+  blocks <- do.call(c, blocks_list)                  # concatenated blocks
+  q <- length(blocks)
+  K <- length(blocks[[1]])
+
+  # Choose r to keep expected counts >= min_expected
+  N_total <- q*K
+  if (is.null(r)) r <- max(2L, min(10L, floor(N_total / (min_expected*q))))
+
+  pooled <- unlist(blocks, use.names = FALSE)
+
+  if (breaks == "quantile") {
+    probs <- seq(0, 1, length.out = r + 1)
+    brks <- as.numeric(quantile(pooled, probs, na.rm = TRUE))
+    brks[1] <- brks[1] - 1e-8; brks[length(brks)] <- brks[length(brks)] + 1e-8
+  } else {
+    brks <- seq(min(pooled), max(pooled), length.out = r + 1)
+  }
+
+  binlab <- function(x) cut(x, breaks = brks, include.lowest = TRUE)
+  tab <- sapply(blocks, function(b) table(binlab(b)))
+  if (is.null(dim(tab))) tab <- matrix(tab, nrow = r)
+  rownames(tab) <- levels(binlab(pooled))
+  colnames(tab) <- paste0("block_", seq_len(q))
+
+  tst <- suppressWarnings(chisq.test(tab, simulate.p.value = simulate_p, B = B))
+  small <- any(tst$expected < min_expected)
+
+  list(
+    p_value = unname(tst$p.value),
+    statistic = unname(tst$statistic),
+    df = unname(tst$parameter),
+    small_expected = small,
+    method = if (simulate_p) "Chi-squared (MC p)" else "Pearson Chi-squared",
+    r = r, q = q, K = K, k0 = k0, blocks_per_chain = blocks_per_chain,
+    breaks = brks, table = tab
+  )
+}
+
+out2 <- stationarity_chisq_v2(S_list, k0 = 0, blocks_per_chain = 2)
+out4 <- stationarity_chisq_v2(S_list, k0 = 0, blocks_per_chain = 4)
+
+out2$p_value
+out4$p_value
+
+```
+
+
+# BIC Minimizers
+
+## for all chains
+
+```{r}
+
+mcmc.samples.all = rbind(trimmed[[1]],
+                         trimmed[[2]],
+                        trimmed[[3]],
+                         trimmed[[4]])
+
+bic.minimizers.multiple.chains.tc.genesis = find_BIC_minimizer(data.frame(X,y),
+                                               mcmc.samples.all)
+bic.minimizers.multiple.chains.tc.genesis
+
+```
+```{r}
+saveRDS(bic.minimizers.multiple.chains.tc.genesis,
+        file.path(TC_RESULTS_DIR, "bic.minimizers.pooled.chains.rds"))
+```
+
+## for chain 1
+
+```{r}
+bic.minimizers.chain1.tc.genesis = find_BIC_minimizer(data.frame(X,y),
+                                               trimmed[[1]])
+bic.minimizers.chain1.tc.genesis
+
+#saveRDS(bic.minimizers.chain1.tc.genesis,
+#        file.path(TC_RESULTS_DIR,
+#                  "bic.minimizers.chain1.tc.genesis.rds"))
+```
+
+
+## for chain 2
+```{r}
+bic.minimizers.chain2.tc.genesis = find_BIC_minimizer(data.frame(X,y),
+                                               trimmed[[2]])
+bic.minimizers.chain2.tc.genesis
+
+saveRDS(bic.minimizers.chain2.tc.genesis,
+        file.path(TC_RESULTS_DIR,
+                  "bic.minimizers.chain2.tc.genesis.rds"))
+```
+
+
+## for chain 3
+```{r}
+bic.minimizers.chain3.tc.genesis = find_BIC_minimizer(data.frame(X,y),
+                                               trimmed[[3]])
+bic.minimizers.chain3.tc.genesis
+
+saveRDS(bic.minimizers.chain2.tc.genesis,
+        file.path(TC_RESULTS_DIR,
+                  "bic.minimizers.chain3.tc.genesis.rds"))
+```
+
+
+
+## for chain 4 
+```{r}
+bic.minimizers.chain4.tc.genesis = find_BIC_minimizer(data.frame(X,y),
+                                               trimmed[[4]])
+bic.minimizers.chain4.tc.genesis
+
+saveRDS(bic.minimizers.chain4.tc.genesis,
+        file.path(TC_RESULTS_DIR,
+                  "bic.minimizers.chain4.tc.genesis.rds"))
+```
+
+# Plots
+```{r, fig.width=8, fig.height=7}
+
+
+inc_df <- inclusion_summary(mcmc.samples.tc.genesis,
+                            top_k = 50
+                            #ensure_gt = TRUE
+                            )
+plot_inclusion(inc_df,
+               title="Inclusion probabilities with ESS 95% CI")
+
+
+```
+
+
+# Functions
+
+## Standardize TC dataset, fit glm after
+```{r}
+
+std_and_examine_coefs = function(X, y, rs_best_vars, verbose=FALSE){
+  
+  # standardize design matrix
+  X_std = scale(X)
+  X_std = X_std[,rs_best_vars]
+  
+  # only take selected vars into account
+  
+  
+  lm = glm(as.formula(paste(names(y), "~ .")),
+           data=data.frame(X_std,y),
+           family='binomial')
+  
+  
+  if (verbose){
+    print(summary(lm))  
+  }
+  
+  return(lm)
+  
+}
+
+```
+
+
+### Analyze Result
+```{r}
+
+fit = std_and_examine_coefs(X, y, rs_bic_min_vars)
+
+
+coefs <- summary(fit)$coefficients
+
+coefs[names(sort(coefs[,"Estimate"], decreasing=TRUE)),]
+
+```
+
+```{r}
+install.packages("statisticalModeling")
+library(statisticalModeling)
+effect_size(fit)
+```
+
+
+
+## Boxplot of frequently picked vars, grouped by y
+
+```{r}
+
+rs_bic_min_vars
+
+```
+```{r}
+
+boxplot_var_by_TC_genesis = function(data, col_var, std = TRUE) {
+  library(dplyr)
+  library(ggplot2)
+  
+  # standardize data 
+  df <- data
+  if (std) {
+    df[, colnames(df) != "TC_genesis"] <- scale(
+      df[, colnames(df) != "TC_genesis"]
+    )
+  }
+  
+  # set TC_genesis to be a factor, NOT continuous
+  df$TC_genesis <- as.factor(df$TC_genesis)
+  
+  # Compute group medians
+  medians <- df %>%
+    group_by(TC_genesis) %>%
+    summarise(med = median(.data[[col_var]], na.rm = TRUE), .groups = "drop")
+  
+  
+  
+  # col_var is not a literal, so need to use .data[[..]]
+  ggplot(df, aes(y = .data[[col_var]], x = TC_genesis)) +
+    
+    geom_boxplot() +
+    
+    # its hline not vline because we flip: (1) set horizontal first
+    # (2) then flip
+    geom_hline(data = medians, aes(yintercept = med, color = TC_genesis),
+               linetype = "solid", size = 0.8, show.legend = FALSE,
+               alpha=0.7) +
+    
+    coord_flip() +
+    
+    labs(y = col_var, x = "TC_genesis") +
+    
+    theme_minimal(base_size = 13)
+}
+
+```
+
+
+
+```{r}
+boxplot_var_by_TC_genesis <- function(data, col_var, std = TRUE,
+                                      cols = c("0" = "#0B7D0B",  # dark green
+                                               "1" = "#D62728"), # red
+                                      show_trend = TRUE,
+                                      median_width = 0.55,
+                                      show_legend=TRUE) {
+  library(dplyr); library(ggplot2)
+
+  df <- data
+  if (std) {
+    df[, colnames(df) != "TC_genesis"] <- scale(df[, colnames(df) != "TC_genesis"])
+  }
+  
+  
+  # set TC_genesis to be a factor, NOT continuous
+  df$TC_genesis <- factor(df$TC_genesis, levels = c(0, 1))
+
+  # group medians
+  meds <- df %>%
+    group_by(TC_genesis) %>%
+    summarise(med = median(.data[[col_var]], na.rm = TRUE), .groups = "drop")
+
+  # for optional trend line between the two medians
+  seg <- if (nrow(meds) == 2) data.frame(
+    x = meds$TC_genesis, y = meds$med, grp = 1
+  ) else NULL
+
+  # col_var is not a literal, so need to use .data[[..]]
+  ggplot(df, aes(x = TC_genesis, y = .data[[col_var]])) +
+    
+    # colored boxes by class
+    geom_boxplot(aes(fill = TC_genesis), outlier.alpha = 0.25) +
+    
+    # short horizontal median bars (cleaner than full hlines)
+    
+    #geom_crossbar(data = meds,
+    #              aes(x = TC_genesis, y = med, ymin = med-0.8, ymax = med+0.8,
+    #                  color = TC_genesis),
+    #              width = median_width, fatten = 1.1, inherit.aes = FALSE,
+    #              show.legend = show_legend) +
+    
+    #geom_hline(data = meds, aes(yintercept = med, color = cols),
+    #           linetype = "solid", size = 0.8, show.legend = FALSE,
+    #           alpha=0.7) +
+    
+    # optional: show a “trend” line connecting medians
+    { if (show_trend && !is.null(seg))
+        geom_path(data = seg, aes(x = x, y = y, group = grp),
+                  inherit.aes = FALSE, linetype = "solid", linewidth = 0.7,
+                  color = "blue",
+                  size=0.2,
+                  lineend = "round"
+                  ) } +
+    
+    coord_flip() +
+    
+    scale_fill_manual(values = cols, name = "TC_genesis",
+                      labels = c("0 = no genesis", "1 = genesis")) +
+    
+    scale_color_manual(values = cols, guide = "none") +
+    
+    labs(x = "TC_genesis", y = col_var) +
+    
+    theme_minimal(base_size = 13) +
+    
+    theme(legend.position = ifelse(show_legend, "top", "none"))
+}
+
+```
+
+
+
+
+```{r}
+plist = list(
+  p1 = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,"geopotential"),
+  p2 = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,"geopotential_at_200_hPa", show_legend=FALSE),
+  p3 = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,"geopotential_at_300_hPa", show_legend=FALSE),
+  p4 = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,"geopotential_at_400_hPa", show_legend=FALSE),
+  p5 = boxplot_var_by_TC_genesis(data.NA.fixed.no.basin,"geopotential_at_600_hPa", show_legend=FALSE)
+)
+
+
+plot_grid(plotlist = plist,
+          ncol = 3, nrow=ceiling(length(plist)/3),
+          rel_widths = c(2, 2, 2),
+          rel_heights=c(2,2,2))
+
+
+
+```
+
+
+```{r}
+
+cor(data.NA.fixed.no.basin[,grep("geopotential", rs_bic_min_vars, value=TRUE)])
+
+```
+
+
+# Test
+
+```{r}
+MH.random.search(rep(1,ncol(X)),
+                 data.frame(X,y),
+                 iter=1000)
+```
+
+
+
+

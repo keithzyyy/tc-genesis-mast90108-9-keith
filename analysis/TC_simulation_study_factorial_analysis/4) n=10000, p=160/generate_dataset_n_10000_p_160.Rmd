@@ -1,0 +1,221 @@
+---
+title: "generate_dataset_n_10000_p_160"
+author: "Keith Howen"
+date: "2025-08-24"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(NA)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+#library(splitstackshape)
+```
+
+
+# Defining parameters & Inits for the study.
+
+NOTE in favor of the sparsity problem we also choose X1,..,X4 as
+the ground truths.
+
+```{r}
+p=160
+n=10000
+
+# X1 to X2 are CORRELATED ground truths
+p_corr_gt = 2
+
+# X3,X4 are UNCORRELATED ground truths
+p_uncorr_gt = 2
+
+# The rest are UNCORRELATED REDUNDANTs
+p_uncorr_red = p - p_corr_gt - p_uncorr_gt
+
+# Initializing a 'dict' like structure to store results for each
+# of the 15 factor combinations
+# this is because we cannot directly do multi-level indexing -- 
+# we have to initialize each value as a list first, then overwrite it.
+rhos <- c('-0.9', '-0.5', '0', '0.5', '0.9')
+signal_strengths <- c('weak', 'moderate', 'strong')
+
+results <- list()
+for (rho in rhos) {
+  
+  results[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    results[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+
+Sigmas <- list()
+for (rho in rhos) {
+  
+  Sigmas[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    Sigmas[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+
+X_data <- list()
+for (rho in rhos) {
+  
+  X_data[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    X_data[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+results
+
+
+results2 <- list()
+for (rho in rhos) {
+  
+  results2[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    results2[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+
+Sigmas2 <- list()
+for (rho in rhos) {
+  
+  Sigmas2[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    Sigmas2[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+
+X_data2 <- list()
+for (rho in rhos) {
+  
+  X_data2[[rho]] <- list()
+  
+  for (s in signal_strengths) {
+    X_data2[[rho]][[s]] <- "empty"  
+  }
+  
+}
+
+
+
+```
+
+# ✓ Comb 1: rho=0.9, moderate s/n
+
+```{r}
+
+# generate the design matrix with specified ground truth correlation
+Sigmas[['0.9']][['moderate']] = construct_block_cov(p, 0.9)
+X_data[['0.9']][['moderate']] = generate_synthetic_vars(Sigmas[['0.9']][['moderate']],
+                                                    SIZE=n)
+
+dim(X_data[['0.9']][['moderate']])
+#sum(Sigmas[['0.9']][['moderate']]) - sum(diag(Sigmas[['0.9']][['moderate']]))
+Sigmas[['0.9']][['moderate']][1:10, 1:10]
+
+# we can use the same resuulting beta values from n=2000, p=16
+# for moderate s/n and high correlation
+# recall it is c(3, 0.6, -3, -0.29)
+
+results[['0.9']][['moderate']] = check_significance(
+                                  c(0.2, 0.11, -0.2, -0.07),
+                                  X_data[['0.9']][['moderate']])
+
+
+```
+
+
+
+# Save the results
+
+```{r}
+# save the results for simulation scenario (design matrix, response, 
+# and other metadata that will not be used for the RS procedure)
+saveRDS(results,
+        here("output",
+             "simulation_factorial_analysis_n_10000_p_160_outputs",
+             "results_n_10000_p_160.rds"))
+```
+
+
+```{r}
+names(results[['0.9']][['moderate']])
+```
+
+
+# Consider generating another dataset?
+```{r}
+Sigmas2[['0.9']][['moderate']] = construct_block_cov(p, 0.9)
+X_data2[['0.9']][['moderate']] = generate_synthetic_vars(Sigmas2[['0.9']][['moderate']],
+                                                    SIZE=n)
+
+#random_seed = runif(1, min=1,max=100)
+#cat("random_seed = ", random_seed, "\n")
+
+#123.7
+
+results2[['0.9']][['moderate']] = check_significance( c(0.2, 0.11, -0.2, -0.07),
+                    X_data2[['0.9']][['moderate']],
+                    SEED=124.339,
+                    verbose=TRUE)
+```
+
+
+

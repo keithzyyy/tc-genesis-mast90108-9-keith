@@ -1,0 +1,481 @@
+---
+title: "TC_sim_factorial_analysis_RS_1_results"
+author: "Keith Howen"
+date: "2025-07-15"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+
+```{r}
+
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(tidyverse)
+library(here)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+#install.packages("tidyverse")
+
+#library(splitstackshape)
+```
+
+
+# Path for results
+```{r}
+BASE_DIR = "simulation_factorial_analysis_n_2000_p_16_outputs"
+list.files(
+  here("output", BASE_DIR)
+)
+```
+
+# Read MCMC samples for 15 combs
+
+The 3 design matrices for each of the 5 correlation level are the SAME.
+⦁	For example, the X matrix for c1, c6, and c11 are the same
+✅Combination 1/c1: corr(X1,X2)=0, high s/n
+✅Combination 2/c2: corr(X1,X2)=+0.5, high s/n
+✅Combination 3/c3: corr(X1,X2)=+0.9, high s/n
+✅Combination 4/c4: corr(X1,X2)=-0.5, high s/n
+✅Combination 5/c5: corr(X1,X2)=-0.9, high s/n
+✅Combination 6/c6: corr(X1,X2)=0, moderate s/n
+✅Combination 7/c7: corr(X1,X2)=+0.5, moderate s/n
+✅Combination 8/c8: corr(X1,X2)=+0.9, moderate s/n
+✅Combination 9/c9: corr(X1,X2)=-0.5, moderate s/n
+✅Combination 10/c10: corr(X1,X2)=-0.9, moderate s/n
+✅Combination 11/c11: corr(X1,X2)=0, weak s/n
+✅Combination 12/c12: corr(X1,X2)=+0.5, weak s/n
+✅Combination 13/c13: corr(X1,X2)=+0.9, weak s/n
+✅Combination 14/c14: corr(X1,X2)=-0.5, weak s/n
+✅Combination 15/c15: corr(X1,X2)=-0.9, weak s/n
+
+Results are prefixed by `gibbs`. 
+
+```{r}
+sort(
+  grep("gibbs",
+     list.files(here("output", BASE_DIR)),
+     value=TRUE)
+)
+```
+
+```{r}
+
+CORR_LEVELS = c("0", "+0.5", "+0.9", "-0.5", "-0.9")
+SN_LEVELS = c("strong", "moderate", "weak")
+
+meta <- tibble(
+    combination = 1:15,
+    correlation = rep(CORR_LEVELS, length(SN_LEVELS)),
+    s_n = rep(SN_LEVELS, each = length(CORR_LEVELS))
+  )
+
+
+read_all_MCMC_samples = function(){
+  
+  ## 1. INITS 
+  # Metadata for combinations
+  meta <- tibble(
+    combination = 1:15,
+    correlation = rep(CORR_LEVELS, length(SN_LEVELS)),
+    s_n = rep(SN_LEVELS, each = length(CORR_LEVELS))
+  )
+  
+  # dict with 2 keys essentially
+  mcmc.samples <- list()
+  for (rho in CORR_LEVELS) {
+    mcmc.samples[[rho]] <- list()
+    for (s in SN_LEVELS) {
+      mcmc.samples[[rho]][[s]] <- "empty"  
+    }
+  }
+  
+  ## 2. store MCMC samples
+  for (i in 1:15) {
+    
+    combo_id <- paste0("c", i)
+    path_base <- here("output", BASE_DIR)
+    
+    row = readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".rds")))
+
+    # retrieve corresponding (corr_level, sn_level) from
+    # the 'meta' metadata -- have to use redirection like operator
+    # to filter tibbles
+    corr_level = (meta %>% filter(combination == i))$correlation
+    sn_level = (meta %>% filter(combination == i))$s_n
+    
+    mcmc.samples[[corr_level]][[sn_level]] = row
+  }
+  
+  return(mcmc.samples)
+  
+}
+
+
+
+# Final summary table
+mcmc.samples = read_all_MCMC_samples()
+```
+
+
+# Start Analyzing
+
+```{r}
+names(mcmc.samples)
+
+dim(mcmc.samples[["0"]][["strong"]])
+```
+
+## 🖼️ Heatmap
+
+```{r}
+
+plot_grid(
+  
+  
+  plot_model_heatmap(mcmc.samples[["+0.9"]][["moderate"]],
+                     thin = 5,
+                     order = "by_mean",
+                     exclude_unimportant_vars=12,
+                     put_gts_on_top=FALSE,
+                     transpose=FALSE,
+                     title = "Model path heatmap (highly correlated GTs, moderate SNR)"),
+    
+  plot_model_heatmap(mcmc.samples[["+0.9"]][["weak"]],
+                     thin = 5,
+                     order = "by_mean",
+                     exclude_unimportant_vars=12,
+                     put_gts_on_top=FALSE,
+                     transpose=FALSE,
+                     title = "Model path heatmap (highly correlated GTs, weak SNR)"), 
+    
+    
+    nrow=2
+  
+)
+
+```
+
+
+
+## 🖼️ Trace plot of number of variables
+
+```{r}
+
+
+plot_grid(
+  
+
+  plot_num_vars_trace(mcmc.samples[["+0.9"]][["moderate"]],
+                    window = 10,
+                    dimension_BIC_minim = 4,
+                    title = "Trace: number of variables \n in sampled models \n (highly correlated GTs, \n moderate SNR)"), 
+    
+  plot_num_vars_trace(mcmc.samples[["+0.9"]][["weak"]],
+                    window = 10,
+                    dimension_BIC_minim = 2,
+                    title = "Trace: number of variables \n in sampled models \n (highly correlated GTs, \n weak SNR)"), 
+    
+    
+  ncol=2
+  
+)
+
+
+```
+```{r}
+plot_num_vars_trace(mcmc.samples[["+0.9"]][["weak"]],
+                    window = 10,
+                    dimension_BIC_minim = 4)
+```
+
+## Rel freqs with ESS-adjusted CI
+```{r}
+
+plot_grid(
+  
+  plot_inclusion(inclusion_summary(mcmc.samples[["+0.9"]][["moderate"]],
+                            top_k = 16,
+                            ensure_gt = TRUE,
+                            gt_idx=1:4),
+                 title = "Inclusion probabilities\nwith ESS 95% CI\n(Highly correlated GTs, moderate SNR)"),
+  
+  plot_inclusion(inclusion_summary(mcmc.samples[["+0.9"]][["weak"]],
+                            top_k = 16,
+                            ensure_gt = TRUE,
+                            gt_idx=1:4),
+                 title = "Inclusion probabilities\nwith ESS 95% CI\n(Highly correlated GTs, weak SNR)"),
+  ncol=2
+  
+  
+)
+
+
+
+
+
+```
+
+
+
+# BIC Minimizers
+(moderate, +0.5)
+and all levels of weak
+
+```{r}
+print(meta)
+```
+
+
+```{r}
+investigate_imperfect_combos = function(){
+  
+  
+  # manually enumerate scnearios where correct model is not obtained
+  
+  imperfect_combs_id = c(7,11,12,13,14,15)
+  
+  path_base <- here("output", BASE_DIR)
+  
+  for (i in imperfect_combs_id){
+    
+    corr_level = (meta %>% filter(combination == i))$correlation
+    sn_level = (meta %>% filter(combination == i))$s_n
+    
+    cat("Top 5 BIC Minimizers for ", corr_level, ",",  sn_level, "\n")
+    
+    data_comb_i = readRDS(file.path(path_base, paste0("result.","c",i,".rds")))
+    
+    X = data_comb_i$X.syn
+    y = data_comb_i$y.syn
+    
+    print(
+      find_BIC_minimizer(data.frame(X,y),mcmc.samples[[corr_level]][[sn_level]])$models_by_bic
+    )
+  }
+  
+}
+
+
+investigate_imperfect_combos()
+
+
+```
+
+# Obtain BIC of true models for imperfect results
+✅Combination 1/c1: corr(X1,X2)=0, high s/n
+✅Combination 2/c2: corr(X1,X2)=+0.5, high s/n
+✅Combination 3/c3: corr(X1,X2)=+0.9, high s/n
+✅Combination 4/c4: corr(X1,X2)=-0.5, high s/n
+✅Combination 5/c5: corr(X1,X2)=-0.9, high s/n
+✅Combination 6/c6: corr(X1,X2)=0, moderate s/n
+✅Combination 7/c7: corr(X1,X2)=+0.5, moderate s/n
+✅Combination 8/c8: corr(X1,X2)=+0.9, moderate s/n
+✅Combination 9/c9: corr(X1,X2)=-0.5, moderate s/n
+✅Combination 10/c10: corr(X1,X2)=-0.9, moderate s/n
+✅Combination 11/c11: corr(X1,X2)=0, weak s/n
+✅Combination 12/c12: corr(X1,X2)=+0.5, weak s/n
+✅Combination 13/c13: corr(X1,X2)=+0.9, weak s/n
+✅Combination 14/c14: corr(X1,X2)=-0.5, weak s/n
+✅Combination 15/c15: corr(X1,X2)=-0.9, weak s/n
+```{r}
+
+# 11, 14
+compute.BIC.true.model = function(i){
+  
+    data_comb_i = readRDS(file.path(path_base, paste0("result.","c",i,".rds")))
+    X = data_comb_i$X.syn
+    y = data_comb_i$y.syn
+    
+    return(
+      compute.BIC(data.frame(X,y), colnames(X) %in% c("X1","X2","X3","X4"))
+    )
+  
+}
+
+compute.BIC.true.model(14)
+
+```
+
+
+
+
+# 🧹Summarize results in a table
+
+## raw code
+
+```{r}
+
+
+# Metadata for combinations
+meta <- tibble(
+  combination = 1:15,
+  correlation = rep(c("0", "+0.5", "+0.9", "-0.5", "-0.9"), 3),
+  s_n = rep(c("high", "moderate", "weak"), each = 5)
+)
+
+# Ground truth variables
+ground_truth_vars <- paste0("X", 1:4)
+
+# Initialize empty list to collect rows
+all_results <- vector("list", length = 15)
+
+for (i in 1:15) {
+  combo_id <- paste0("c", i)
+  path_base <- here("output", "simulation_factorial_analysis_outputs")
+
+  # Read relative frequencies
+  rel_freq_obj <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".rel.freqs.rds")))
+  rel_freqs <- rel_freq_obj$rel.freqs.non.basin
+
+  # Read empirical mode (most common model in MCMC)
+  empirical_mode <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".best.Xs.rds")))
+
+  # Read BIC-selected model
+  bic_model_obj <- readRDS(file.path(path_base, paste0("gibbs.RS.", combo_id, ".best.Xs.BIC.rds")))
+  bic_model <- names(which(bic_model_obj$best.model == 1))
+  min_bic <- bic_model_obj$min.BIC
+
+  # Logical check: were all GT variables recovered?
+  recovered_all_gt_emp <- all(ground_truth_vars %in% empirical_mode)
+  recovered_all_gt_bic <- all(ground_truth_vars %in% bic_model)
+
+  # Combine into one row (as tibble)
+  row <- tibble(
+    Combination = i,
+    Correlation = meta$correlation[i],
+    Signal_to_Noise = meta$s_n[i],
+    Empirical_Mode = paste(empirical_mode, collapse = ", "),
+    BIC_Model = paste(bic_model, collapse = ", "),
+    Min_BIC = min_bic,
+    Recovered_GT_Empirical = recovered_all_gt_emp,
+    Recovered_GT_BIC = recovered_all_gt_bic
+  ) %>%
+    bind_cols(as_tibble(t(rel_freqs)))  # Add relative freq columns
+
+  all_results[[i]] <- row
+}
+
+# Final summary table
+summary_table <- bind_rows(all_results)
+
+# Show in viewer
+print(summary_table)
+
+```
+
+
+
+```{r}
+SUMMARY_TABLE_COLS_TO_EXCLUDE = c(sapply(5:16, function(i) paste0("X",i)), "Combination")
+summary_table_filtered = summary_table[,!colnames(summary_table) %in% SUMMARY_TABLE_COLS_TO_EXCLUDE]
+```
+
+
+```{r}
+summary_table_filtered
+```
+
+
+## package it into a function
+
+```{r}
+
+```
+
+
+
+# 🧹Automatically generate latex code from result!.
+
+```{r}
+
+# install.packages(c("dplyr","knitr","kableExtra"))
+# a little helper to turn one SNR‐subset into a LaTeX table
+make_snr_table <- function(df, snr_level) {
+  sub <- df %>%
+    filter(Signal_to_Noise == snr_level) %>%
+    select(
+      Correlation,
+      `v1 freq` = X1,
+      `v2 freq` = X2,
+      `v3 freq` = X3,
+      `v4 freq` = X4,
+      `Empirical mode`    = Empirical_Mode,
+      `BIC model`         = BIC_Model,
+      `Min. BIC`          = Min_BIC
+    )
+  
+  cap <- paste0("Summary statistics for \\textbf{", snr_level,
+                "} signal‐to‐noise across correlation levels")
+  
+  sub %>%
+    kable(
+      format       = "latex",
+      booktabs     = TRUE,
+      caption      = cap,
+      label        = paste0("tab:", snr_level),
+      align        = c("l", rep("c", ncol(sub)-1)),
+      escape       = FALSE
+    ) %>%
+    kable_styling(latex_options = c("hold_position","scale_down")) %>%
+    column_spec(1, bold = TRUE)
+}
+
+# generate result tables for latex report
+
+make_sim_study_tables = function(summary_table_filtered){
+  # now loop over each SNR level and cat() the tables
+  snrs <- unique(summary_table_filtered$Signal_to_Noise)
+  for (snr in snrs) {
+    cat("\n\n", make_snr_table(summary_table_filtered, snr), "\n\n")
+  }
+}
+
+make_sim_study_tables(summary_table_filtered)
+
+
+
+```
+
+
+
+
+

@@ -1,0 +1,290 @@
+---
+title: "random_search_and_analyze_results_n_200_p_16"
+author: "Keith Howen"
+date: "2025-08-01"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+# -------
+
+```{r}
+# TC genesis libs
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+```
+
+
+# Read synthetic datasets
+
+```{r}
+BASE_DIR = "simulation_factorial_analysis_n_200_p_16_outputs"
+outdir = here("output", BASE_DIR)
+results = readRDS(file.path(outdir, "results.rds"))
+```
+
+# Verify correctness of synthetic datasets
+
+## rho=0
+```{r}
+CORR_TEST = "0"
+SN_TEST = "strong"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0"
+SN_TEST = "moderate"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0"
+SN_TEST = "weak"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+## rho=+0.5
+
+```{r}
+CORR_TEST = "0.5"
+SN_TEST = "strong"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0.5"
+SN_TEST = "moderate"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0.5"
+SN_TEST = "weak"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+
+
+## rho=-0.5
+```{r}
+CORR_TEST = "-0.5"
+SN_TEST = "strong"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "-0.5"
+SN_TEST = "moderate"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "-0.5"
+SN_TEST = "weak"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+
+
+## rho=+0.9
+```{r}
+CORR_TEST = "0.9"
+SN_TEST = "strong"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0.9"
+SN_TEST = "moderate"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "0.9"
+SN_TEST = "weak"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+
+## rho=-0.9
+```{r}
+CORR_TEST = "-0.9"
+SN_TEST = "strong"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "-0.9"
+SN_TEST = "moderate"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+```{r}
+CORR_TEST = "-0.9"
+SN_TEST = "weak"
+round(cor(results[[CORR_TEST]][[SN_TEST]]$X.syn)[1:5,1:5], 5)
+results[[CORR_TEST]][[SN_TEST]]$lrt_vs_wald_table
+```
+
+
+# Running simulation studies for all 15 datasets.
+
+```{r}
+
+# initialize data structure to hold the gibbs samples
+
+mcmc.samples <- list()
+rhos <- c('-0.9', '-0.5', '0', '0.5', '0.9')
+signal_strengths <- c('weak', 'moderate', 'strong')
+
+for (rho in rhos) {
+  mcmc.samples[[rho]] <- list()
+  for (s in signal_strengths) {
+    mcmc.samples[[rho]][[s]] <- "empty"  
+  }
+}
+
+run_sim_studies = function(results, burnin=300, iter=2300){
+  # checkpointing!
+  if (file.exists(file.path(outdir, "mcmc_samples.rds"))) {
+    # <<- we want to overwrite the GLOBAL variable
+    mcmc.samples <<- readRDS(file.path(outdir, "mcmc_samples.rds"))
+  }
+  for (rho in rhos) {
+    for (s in signal_strengths) {
+      
+      if (identical(mcmc.samples[[rho]][[s]], "empty")) {
+        cat(sprintf("[%s] Begin running RS for %s, %s\n", Sys.time(), rho, s))
+        X = results[[rho]][[s]]$X.syn
+        y = results[[rho]][[s]]$y.syn
+        vinit = rep(1, ncol(X))
+        suppressWarnings(
+          mcmc.samples[[rho]][[s]] <<-
+            Gibbs.random.search(vinit, data.frame(X, y),
+                              burnin=burnin, iter=iter, penalty='BIC')
+        )
+        saveRDS(mcmc.samples, file.path(outdir, "mcmc_samples.rds"))
+      } else {
+        cat(sprintf("[%s] RS for %s, %s already done\n", Sys.time(), rho, s))
+      }
+      
+    }
+  }
+}
+
+
+```
+
+
+```{r}
+run_sim_studies(results)
+```
+
+# Analyze BIC Minimizers
+```{r}
+rhos <- c('-0.9', '-0.5', '0', '0.5', '0.9')
+signal_strengths <- c('weak', 'moderate', 'strong')
+
+for (rho in rhos) {
+    for (s in signal_strengths) {
+      cat(sprintf("[%s] Calculating top 5 BIC mnimizers for %s, %s\n", Sys.time(), rho, s))
+      X = results[[rho]][[s]]$X.syn
+      y = results[[rho]][[s]]$y.syn 
+      suppressWarnings(
+        print(
+          find_BIC_minimizer(data.frame(cbind(X, y)), mcmc.samples[[rho]][[s]])$models
+        )
+        
+      )
+      
+    }
+  }
+
+
+```
+
+
+# Format results into latex-renderable code.
+```{r}
+summary_table <- make_summary_from_mcmc_samples(
+  mcmc.samples,
+  ground_truth_vars = paste0("X", 1:4),
+  results)
+```
+```{r}
+summary_table
+```
+
+```{r}
+format_sim_study_tables(summary_table)
+```
+
+
+
+
+
+
+

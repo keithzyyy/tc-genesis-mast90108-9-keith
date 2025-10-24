@@ -1,0 +1,68 @@
+---
+title: "analyze_gibbs_multiple_lambda"
+author: "Keith Howen"
+date: "2025-09-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+
+```{r}
+
+list.files(
+  here("output", "gibbs_runs_multi_lambda", "gibbs_lambda_0.75_chain_1_full.rds")
+)
+
+```
+
+```{r}
+
+names(
+    readRDS(
+    here("output", "gibbs_runs_multi_lambda", "gibbs_lambda_0.75_chain_1_full.rds")
+  )
+)
+
+
+
+plot(
+  readRDS(
+    here("output", "gibbs_runs_multi_lambda", "gibbs_lambda_0.75_chain_1_full.rds")
+  )$rs$bic_trace,
+  type='l'
+)
+
+```
+
+

@@ -1,0 +1,196 @@
+---
+title: "reanalyze_RS_n_200_p_16"
+author: "Keith Howen"
+date: "2025-08-17"
+output: html_document
+---
+
+# 💻 set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+# 💻 Working Directory Setup using `here()`
+
+Use `here()` to *standardize the working directory between R markdown
+and R console* as opposed to using `getwd()` (and `setwd()`), at the
+slight inconveniences of importing the `here` library, using `here()` to
+write file paths, and manually specify paths for files outside the
+working directory.
+
+```{r setup, include=FALSE}
+#install.packages('here')
+library(here)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Consolidate working directory & Imports
+
+## Check working directory
+
+```{r}
+here()
+```
+
+## Import all libraries (incl. custom)
+# -------
+
+```{r}
+# TC genesis libs
+# one hot encoding with intercept
+#source(here("lib", "preprocessing_v3.R"))
+# full rank encoding with NO intercept
+#source(here("lib", "preprocessing_v2.R"))
+#source(here("lib", "probit_gibbs.R"))
+#source(here("lib", "MCMC_diagnostic_functions.R"))
+source(here("lib", "simulation_routines.R"))
+source(here("lib", "factorial_analysis_routines.R"))
+source(here("lib", "gibbs_sampler_random_search.R"))
+
+library(mvtnorm)
+library(truncnorm)
+library(Matrix)
+library(MASS)
+library(mvnTest)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+#install.packages("mvnTest")
+
+#library(splitstackshape)
+```
+
+
+# Find BIC Minimizers
+
+```{r}
+BASE_DIR = "simulation_factorial_analysis_n_200_p_16_outputs"
+outdir = here("output", BASE_DIR)
+mcmc.samples = readRDS(file.path(outdir, "mcmc_samples.rds"))
+results = readRDS(file.path(outdir, "results.rds"))
+
+rhos <- c('-0.9', '-0.5', '0', '0.5', '0.9')
+#signal_strengths <- c('weak', 'moderate', 'strong')
+signal_strengths <- c('weak')
+
+for (rho in rhos) {
+    for (s in signal_strengths) {
+      
+      cat(sprintf("[%s] Calculating BIC mnimizer for %s, %s\n", Sys.time(), rho, s))
+      X = results[[rho]][[s]]$X.syn
+      y = results[[rho]][[s]]$y.syn 
+      suppressWarnings(
+        print(
+          find_BIC_minimizer(data.frame(cbind(X, y)), mcmc.samples[[rho]][[s]])$models
+        )
+      )
+      
+      
+      #cat(sprintf("[%s] Top Rel freqs for %s, %s\n", Sys.time(), rho, s))
+      #print(
+      #  sort(rel.freq.inference(mcmc.samples[[rho]][[s]])$rel.freqs.non.basin, decreasing=TRUE)
+      #)
+      
+      
+      
+    }
+  }
+
+```
+
+```{r}
+compute.BIC.true.model.small = function(rho, s){
+  
+    X = results[[rho]][[s]]$X.syn
+    y = results[[rho]][[s]]$y.syn 
+    return(
+      compute.BIC(data.frame(X,y), 
+                  colnames(X) %in% c("X1","X2","X3","X4"))
+    )
+}
+
+
+compute.BIC.true.model.small("-0.5", "weak")
+```
+
+# Plots
+
+## ESS adjusted CIs
+```{r}
+plot_grid(
+  
+  plot_inclusion(inclusion_summary(mcmc.samples[["0.9"]][["moderate"]],
+                            top_k = 16,
+                            ensure_gt = TRUE,
+                            gt_idx=1:4),
+                 title = "Inclusion probabilities\nwith ESS 95% CI\n(Highly correlated GTs, moderate SNR)"),
+  
+  plot_inclusion(inclusion_summary(mcmc.samples[["0.9"]][["weak"]],
+                            top_k = 16,
+                            ensure_gt = TRUE,
+                            gt_idx=1:4),
+                 title = "Inclusion probabilities\nwith ESS 95% CI\n(Highly correlated GTs, weak SNR)"),
+  ncol=2
+  
+  
+)
+```
+
+
+
+## Model Path Heatmaps
+```{r}
+plot_grid(
+  
+  
+  plot_model_heatmap(mcmc.samples[["0.9"]][["moderate"]],
+                     thin = 5,
+                     order = "by_mean",
+                     exclude_unimportant_vars=12,
+                     put_gts_on_top=FALSE,
+                     transpose=FALSE,
+                     title = "Model path heatmap (highly correlated GTs, moderate SNR)"),
+    
+  plot_model_heatmap(mcmc.samples[["0.9"]][["weak"]],
+                     thin = 5,
+                     order = "by_mean",
+                     exclude_unimportant_vars=12,
+                     put_gts_on_top=FALSE,
+                     transpose=FALSE,
+                     title = "Model path heatmap (highly correlated GTs, weak SNR)"), 
+    
+    
+    nrow=2
+  
+)
+```
+
+
+
+## Trace of number of variables
+
+```{r}
+plot_grid(
+  
+
+  plot_num_vars_trace(mcmc.samples[["0.9"]][["moderate"]],
+                    window = 10,
+                    dimension_BIC_minim = 4,
+                    title = "Trace: number of variables \n in sampled models \n (highly correlated GTs, \n moderate SNR)"), 
+    
+  plot_num_vars_trace(mcmc.samples[["0.9"]][["weak"]],
+                    window = 10,
+                    dimension_BIC_minim = 2,
+                    title = "Trace: number of variables \n in sampled models \n (highly correlated GTs, \n weak SNR)"), 
+    
+    
+  ncol=2
+  
+)
+```
+
+
+
+

@@ -1,0 +1,770 @@
+
+<h2 class="sr-only">Interactive explorer for MCMC-based variable selection research applied to tropical cyclone genesis prediction</h2>
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font-sans); }
+.app { padding: 1.5rem 0; }
+.nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+.nav-btn {
+  font-size: 13px; padding: 6px 14px; border-radius: 20px;
+  border: 0.5px solid var(--color-border-secondary);
+  background: var(--color-background-primary);
+  color: var(--color-text-secondary); cursor: pointer;
+  transition: all 0.15s;
+}
+.nav-btn.active {
+  background: var(--color-text-primary); color: var(--color-background-primary);
+  border-color: var(--color-text-primary);
+}
+.nav-btn:hover:not(.active) { background: var(--color-background-secondary); }
+.section { display: none; }
+.section.active { display: block; }
+
+.card {
+  background: var(--color-background-primary);
+  border: 0.5px solid var(--color-border-tertiary);
+  border-radius: var(--border-radius-lg); padding: 1rem 1.25rem; margin-bottom: 1rem;
+}
+.card-sm {
+  background: var(--color-background-secondary);
+  border-radius: var(--border-radius-md); padding: 0.875rem 1rem;
+}
+.label { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.val { font-size: 22px; font-weight: 500; color: var(--color-text-primary); }
+.val-sm { font-size: 16px; font-weight: 500; color: var(--color-text-primary); }
+.sub { font-size: 13px; color: var(--color-text-secondary); margin-top: 3px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 1rem; }
+.grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 1rem; }
+.section-title { font-size: 18px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 4px; }
+.section-sub { font-size: 14px; color: var(--color-text-secondary); margin-bottom: 1.25rem; line-height: 1.5; }
+.divider { border: none; border-top: 0.5px solid var(--color-border-tertiary); margin: 1.25rem 0; }
+.badge {
+  display: inline-block; font-size: 11px; padding: 2px 8px;
+  border-radius: 10px; font-weight: 500;
+}
+.badge-blue { background: #E6F1FB; color: #185FA5; }
+.badge-teal { background: #E1F5EE; color: #0F6E56; }
+.badge-amber { background: #FAEEDA; color: #854F0B; }
+.badge-red { background: #FCEBEB; color: #A32D2D; }
+.badge-gray { background: #F1EFE8; color: #5F5E5A; }
+.row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bar-wrap { flex: 1; background: var(--color-background-secondary); border-radius: 4px; height: 8px; overflow: hidden; }
+.bar { height: 100%; border-radius: 4px; transition: width 0.4s; }
+.bar-teal { background: #1D9E75; }
+.bar-amber { background: #EF9F27; }
+.bar-blue { background: #378ADD; }
+.bar-red { background: #E24B4A; }
+.bar-purple { background: #7F77DD; }
+.var-name { font-size: 13px; color: var(--color-text-primary); min-width: 200px; }
+.var-freq { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); min-width: 36px; text-align: right; }
+.driver-card {
+  border: 0.5px solid var(--color-border-tertiary);
+  border-radius: var(--border-radius-md); padding: 0.875rem 1rem;
+  margin-bottom: 8px; cursor: pointer; transition: background 0.1s;
+}
+.driver-card:hover { background: var(--color-background-secondary); }
+.driver-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.driver-icon { width: 28px; height: 28px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; }
+.driver-detail { display: none; padding-top: 8px; border-top: 0.5px solid var(--color-border-tertiary); margin-top: 8px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.6; }
+.driver-detail.open { display: block; }
+.algo-step {
+  display: flex; gap: 12px; margin-bottom: 1rem; align-items: flex-start;
+}
+.step-num {
+  min-width: 28px; height: 28px; border-radius: 50%;
+  background: var(--color-text-primary); color: var(--color-background-primary);
+  font-size: 12px; font-weight: 500; display: flex; align-items: center; justify-content: center;
+}
+.step-body { flex: 1; }
+.step-title { font-size: 14px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 2px; }
+.step-desc { font-size: 13px; color: var(--color-text-secondary); line-height: 1.5; }
+.lambda-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.lambda-label { font-size: 12px; font-family: var(--font-mono); min-width: 52px; color: var(--color-text-secondary); }
+.lambda-bar-wrap { flex: 1; background: var(--color-background-secondary); border-radius: 4px; height: 20px; position: relative; overflow: hidden; }
+.lambda-bar-exp { position: absolute; left: 0; top: 0; height: 100%; background: #B5D4F4; border-radius: 4px 0 0 4px; }
+.lambda-bar-expl { position: absolute; left: 0; top: 0; height: 100%; background: #1D9E75; opacity: 0.8; border-radius: 4px 0 0 4px; }
+.lambda-note { font-size: 11px; color: var(--color-text-secondary); min-width: 80px; text-align: right; }
+.filter-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+.filter-btn {
+  font-size: 12px; padding: 4px 10px; border-radius: 12px;
+  border: 0.5px solid var(--color-border-secondary);
+  background: var(--color-background-primary);
+  color: var(--color-text-secondary); cursor: pointer;
+}
+.filter-btn.active { background: #E1F5EE; color: #0F6E56; border-color: #0F6E56; }
+.insight-box {
+  border-left: 3px solid #1D9E75; padding: 0.75rem 1rem;
+  background: var(--color-background-secondary);
+  border-radius: 0 var(--border-radius-md) var(--border-radius-md) 0;
+  margin-bottom: 1rem; font-size: 13px; color: var(--color-text-secondary); line-height: 1.6;
+}
+.insight-box strong { color: var(--color-text-primary); font-weight: 500; }
+.coef-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.coef-name { font-size: 12px; color: var(--color-text-primary); min-width: 220px; flex-shrink: 0; }
+.coef-bar-center { flex: 1; display: flex; align-items: center; gap: 2px; height: 16px; }
+.coef-pos { background: #1D9E75; height: 100%; border-radius: 0 3px 3px 0; }
+.coef-neg { background: #E24B4A; height: 100%; border-radius: 3px 0 0 3px; margin-left: auto; }
+.coef-val { font-size: 12px; font-family: var(--font-mono); color: var(--color-text-secondary); min-width: 48px; text-align: right; }
+.flex-center { display: flex; align-items: center; justify-content: center; }
+</style>
+
+<div class="app">
+
+<div style="margin-bottom: 1.5rem;">
+  <div style="font-size: 11px; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;">Master's Thesis — University of Melbourne, 2025</div>
+  <div style="font-size: 20px; font-weight: 500; color: var(--color-text-primary); line-height: 1.3;">MCMC Variable Selection for Tropical Cyclone Genesis</div>
+  <div style="font-size: 14px; color: var(--color-text-secondary); margin-top: 4px;">An interactive guide to the research, methods, and findings</div>
+</div>
+
+<nav class="nav" aria-label="Sections">
+  <button class="nav-btn active" onclick="showSection('overview')">Overview</button>
+  <button class="nav-btn" onclick="showSection('method')">How it works</button>
+  <button class="nav-btn" onclick="showSection('lambda')">The λ parameter</button>
+  <button class="nav-btn" onclick="showSection('simulation')">Simulation study</button>
+  <button class="nav-btn" onclick="showSection('findings')">TC genesis findings</button>
+  <button class="nav-btn" onclick="showSection('model')">Final model</button>
+</nav>
+
+<div id="overview" class="section active">
+  <div class="section-title">What this research does</div>
+  <div class="section-sub">With 149 candidate predictors and 2^149 possible models to consider, finding which environmental variables best predict tropical cyclone formation is a needle-in-a-haystack problem. This thesis proposes a smarter search.</div>
+
+  <div class="grid2">
+    <div class="card-sm">
+      <div class="label">Dataset</div>
+      <div class="val">30,826</div>
+      <div class="sub">meteorological events across 7 ocean basins</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">TC events</div>
+      <div class="val">2,562</div>
+      <div class="sub">developed into a cyclone within 12 hours (8%)</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">Candidate variables</div>
+      <div class="val">149</div>
+      <div class="sub">environmental predictors across 9 pressure levels</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">Possible models</div>
+      <div class="val">2¹⁴⁹</div>
+      <div class="sub">too many to ever enumerate exhaustively</div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 15px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 0.75rem;">Why not just use standard methods?</div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom: 0.5rem;">
+      <span class="badge badge-red">Exhaustive search</span>
+      <span style="font-size: 13px; color: var(--color-text-secondary);">Checks all 2^149 submodels — completely infeasible</span>
+    </div>
+    <div class="row" style="margin-bottom: 0.5rem;">
+      <span class="badge badge-amber">Stepwise methods</span>
+      <span style="font-size: 13px; color: var(--color-text-secondary);">Fast but greedy — gets trapped in local minima</span>
+    </div>
+    <div class="row" style="margin-bottom: 0.5rem;">
+      <span class="badge badge-amber">LASSO</span>
+      <span style="font-size: 13px; color: var(--color-text-secondary);">Arbitrarily drops correlated variables — unstable under high collinearity</span>
+    </div>
+    <div class="row">
+      <span class="badge badge-teal">MCMC random search</span>
+      <span style="font-size: 13px; color: var(--color-text-secondary);">Principled, scalable, avoids local optima — this paper's approach</span>
+    </div>
+  </div>
+
+  <div class="insight-box">
+    <strong>Core insight:</strong> Instead of searching all models, construct a probability distribution over models where lower-BIC models get higher probability mass. An MCMC chain then <em>naturally spends more time near the best models</em> — without ever enumerating them all.
+  </div>
+
+  <div class="card-sm" style="margin-bottom: 1rem;">
+    <div style="font-size: 13px; color: var(--color-text-secondary); line-height: 1.6;">
+      The model selection criterion used is <strong style="color: var(--color-text-primary)">BIC (Bayesian Information Criterion)</strong>, chosen because — unlike AIC — it asymptotically selects not just a correct model but the most parsimonious one. The BIC penalises model complexity with a ½ · p · log(n) term, creating a meaningful "detection hurdle" for each additional variable.
+    </div>
+  </div>
+</div>
+
+<div id="method" class="section">
+  <div class="section-title">How the random search works</div>
+  <div class="section-sub">Each candidate model is encoded as a binary vector v ∈ {0,1}^p, where vⱼ = 1 means variable j is included. The procedure samples these vectors from a probability distribution shaped by BIC.</div>
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 1rem; color: var(--color-text-primary);">The Metropolis-Hastings algorithm (used on TC data)</div>
+
+  <div class="algo-step">
+    <div class="step-num">1</div>
+    <div class="step-body">
+      <div class="step-title">Start from an initial model</div>
+      <div class="step-desc">Four chains run in parallel with overdispersed starting points: full model (all 149 vars), empty model, sparse (5% chance per var), and random (50% chance per var).</div>
+    </div>
+  </div>
+  <div class="algo-step">
+    <div class="step-num">2</div>
+    <div class="step-body">
+      <div class="step-title">Propose a neighbour model</div>
+      <div class="step-desc">Flip one random bit in the current binary vector — add or remove exactly one variable. This is the "one-bit flip" transition kernel.</div>
+    </div>
+  </div>
+  <div class="algo-step">
+    <div class="step-num">3</div>
+    <div class="step-body">
+      <div class="step-title">Compute the acceptance probability</div>
+      <div class="step-desc">If the proposed model has a lower BIC → always accept. If higher BIC → accept with probability exp(−λ · ΔBIC). The λ parameter controls how willing the chain is to accept worse models.</div>
+    </div>
+  </div>
+  <div class="algo-step">
+    <div class="step-num">4</div>
+    <div class="step-body">
+      <div class="step-title">Record and repeat</div>
+      <div class="step-desc">After 1,000 burn-in steps, each sampled model is recorded. With 41,000 steps per chain × 4 chains × 12 λ values = ~2 million model evaluations, each requiring a logistic regression fit.</div>
+    </div>
+  </div>
+  <div class="algo-step">
+    <div class="step-num">5</div>
+    <div class="step-body">
+      <div class="step-title">Extract the BIC minimiser and elite set</div>
+      <div class="step-desc">The model with the lowest BIC across all samples is the primary result. All models within ΔBIC ≤ 2 of the minimum are "elite" — statistically indistinguishable by Bayes Factor interpretation.</div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Convergence diagnostics</div>
+  <div class="grid2">
+    <div class="card-sm">
+      <div class="label">Primary check</div>
+      <div class="val-sm">Rank-norm. R̂</div>
+      <div class="sub">Vehtari et al.'s R̂ on BIC values across chains. Target: R̂ &lt; 1.01</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">Secondary check</div>
+      <div class="val-sm">P-charts</div>
+      <div class="sub">Running marginal inclusion frequencies — should stabilise over iterations</div>
+    </div>
+  </div>
+
+  <div class="insight-box">
+    <strong>Key result:</strong> At λ = 0.75, the rank-normalised R̂ = 1.013 — just above the 1.01 threshold, indicating near-convergence. The BIC minimiser at this λ also coincided with the <em>second most frequently visited model</em> in the sparse-start chain — strong evidence it represents a true optimum.
+  </div>
+</div>
+
+<div id="lambda" class="section">
+  <div class="section-title">The λ (inverse-temperature) parameter</div>
+  <div class="section-sub">λ controls the sharpness of the probability distribution over models. Too cold (high λ): trapped in local minima. Too hot (low λ): random walk, poor exploitation. The sweet spot balances both.</div>
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Acceptance probability for a worse model: exp(−λ · ΔBIC)</div>
+
+  <div style="margin-bottom: 1.5rem;">
+    <div style="display: flex; gap: 10px; margin-bottom: 8px; font-size: 11px; color: var(--color-text-secondary);">
+      <span style="min-width: 52px;"></span>
+      <span style="flex:1; font-size: 11px; color: var(--color-text-secondary);">Exploration (accepts worse models)</span>
+      <span style="min-width: 80px;"></span>
+    </div>
+
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 0.1</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 95%; background: #B5D4F4;"></div></div>
+      <span class="lambda-note" style="color: #E24B4A;">too exploratory</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 0.25</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 80%;"></div></div>
+      <span class="lambda-note" style="color: #BA7517;">still warm</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 0.50</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 60%;"></div></div>
+      <span class="lambda-note" style="color: #3B6D11;">good mixing</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label" style="color: var(--color-text-primary); font-weight: 500;">λ = 0.75 ★</span>
+      <div class="lambda-bar-wrap">
+        <div style="position:absolute;left:0;top:0;height:100%;width:45%;background:#1D9E75;border-radius:4px 0 0 4px;"></div>
+        <div style="position:absolute;right:0;top:0;height:100%;width:55%;background:#63b37a;opacity:0.4;border-radius:0 4px 4px 0;"></div>
+      </div>
+      <span class="lambda-note" style="color: #1D9E75; font-weight: 500;">optimal ✓</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 1.00</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 25%; background: #F7C1C1;"></div></div>
+      <span class="lambda-note" style="color: #BA7517;">starts stiffening</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 1.50</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 10%; background: #F09595;"></div></div>
+      <span class="lambda-note" style="color: #E24B4A;">local trap</span>
+    </div>
+    <div class="lambda-row">
+      <span class="lambda-label">λ = 3.00</span>
+      <div class="lambda-bar-wrap"><div class="lambda-bar-exp" style="width: 2%; background: #E24B4A;"></div></div>
+      <span class="lambda-note" style="color: #E24B4A;">frozen</span>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">What λ does to inclusion probability (Gibbs sampler)</div>
+  <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 1rem; line-height: 1.5;">
+    When considering adding a variable, the probability of inclusion is σ(λ · ΔBIC). With ΔBIC = +1 (including the variable improves BIC by 1 point):
+  </div>
+
+  <div style="position: relative; width: 100%; height: 240px; margin-bottom: 1rem;">
+    <canvas id="lambdaChart" role="img" aria-label="Line chart showing inclusion probability as a function of lambda values for different ΔBIC scenarios">Inclusion probability increases with lambda for positive ΔBIC values, and decreases for negative ΔBIC values.</canvas>
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1rem; font-size: 12px; color: var(--color-text-secondary);">
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 20px; height: 3px; background: #1D9E75; display: inline-block; border-radius: 2px;"></span>ΔBIC = +1.5 (var clearly helps)</span>
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 20px; height: 3px; background: #378ADD; display: inline-block; border-radius: 2px;"></span>ΔBIC = +0.3 (marginal help)</span>
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 20px; height: 3px; background: #E24B4A; display: inline-block; border-radius: 2px;"></span>ΔBIC = −0.3 (var slightly hurts)</span>
+  </div>
+
+  <div class="grid3">
+    <div class="card-sm">
+      <div class="label">BIC minimum at</div>
+      <div class="val-sm">λ = 0.75</div>
+      <div class="sub">Lowest BIC across all 12 λ values tested</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">Distinct models at λ = 0.1</div>
+      <div class="val-sm">~55%</div>
+      <div class="sub">High exploration, poor convergence</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">Distinct models at λ = 1.5</div>
+      <div class="val-sm">&lt; 0.5%</div>
+      <div class="sub">Stuck — same few models repeatedly</div>
+    </div>
+  </div>
+</div>
+
+<div id="simulation" class="section">
+  <div class="section-title">Simulation study results</div>
+  <div class="section-sub">Before applying to real data, the procedure was stress-tested across 33 synthetic scenarios varying 4 factors. Ground truth variables were known in advance — performance was measured by how often the search recovered them.</div>
+
+  <div class="filter-row">
+    <span style="font-size: 12px; color: var(--color-text-secondary);">Filter by SNR:</span>
+    <button class="filter-btn active" onclick="filterSim('all', this)">All</button>
+    <button class="filter-btn" onclick="filterSim('strong', this)">Strong</button>
+    <button class="filter-btn" onclick="filterSim('moderate', this)">Moderate</button>
+    <button class="filter-btn" onclick="filterSim('weak', this)">Weak</button>
+  </div>
+
+  <div id="sim-all">
+    <div id="sim-strong-row">
+      <div class="card" style="border-left: 3px solid #1D9E75; border-radius: 0 var(--border-radius-lg) var(--border-radius-lg) 0;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <span class="badge badge-teal">Strong SNR</span>
+          <span style="font-size: 13px; color: var(--color-text-secondary);">All ground truths recovered in all 5 correlation scenarios</span>
+        </div>
+        <div style="font-size: 13px; color: var(--color-text-secondary); line-height: 1.5;">
+          With strong signals, all four ground truth variables (X1–X4) appeared with relative frequencies near 1.0 regardless of correlation. BIC minimiser was always a correct model.
+        </div>
+      </div>
+    </div>
+    <div id="sim-moderate-row">
+      <div class="card" style="border-left: 3px solid #EF9F27; border-radius: 0 var(--border-radius-lg) var(--border-radius-lg) 0;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <span class="badge badge-amber">Moderate SNR</span>
+          <span style="font-size: 13px; color: var(--color-text-secondary);">Mostly recovered — 1–2 scenarios missed a variable</span>
+        </div>
+        <div style="font-size: 13px; color: var(--color-text-secondary); line-height: 1.5;">
+          Under moderate SNR with n=2000, p=16, the procedure correctly recovered all ground truths in 4 of 5 correlation levels. The single miss (corr = 0.5) was explained by BIC's log(n) hurdle — the variable's Wald z² was 7.07 &lt; log(2000) = 7.6, so BIC <em>correctly</em> excluded it.
+        </div>
+      </div>
+    </div>
+    <div id="sim-weak-row">
+      <div class="card" style="border-left: 3px solid #E24B4A; border-radius: 0 var(--border-radius-lg) var(--border-radius-lg) 0;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+          <span class="badge badge-red">Weak SNR</span>
+          <span style="font-size: 13px; color: var(--color-text-secondary);">BIC correctly penalises — not a failure of the method</span>
+        </div>
+        <div style="font-size: 13px; color: var(--color-text-secondary); line-height: 1.5;">
+          Weak-signal variables were often excluded by BIC even when they were genuine ground truths. This is by design — BIC requires evidence exceeding its log(n) hurdle. In 8 of 13 "failed" scenarios, the true model still appeared in the top 5 BIC minimisers within ΔBIC ≤ 2.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Relative frequency thresholds across SNR levels (n=2000, p=16, high correlation)</div>
+
+  <div style="position: relative; width: 100%; height: 220px; margin-bottom: 1rem;">
+    <canvas id="simChart" role="img" aria-label="Grouped bar chart showing variable inclusion frequencies for X1-X4 under strong, moderate and weak SNR">X1 and X3 maintain high frequencies across all SNR levels. X2 and X4 drop significantly under weak SNR.</canvas>
+  </div>
+  <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1rem; font-size: 12px; color: var(--color-text-secondary);">
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #1D9E75; display: inline-block;"></span>Strong SNR</span>
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #EF9F27; display: inline-block;"></span>Moderate SNR</span>
+    <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #E24B4A; display: inline-block;"></span>Weak SNR</span>
+  </div>
+
+  <div class="insight-box">
+    <strong>Key finding:</strong> Using a 0.5 relative frequency cutoff identifies a near-correct model in all non-weak-SNR scenarios — missing at most one ground truth. The stronger variables (X1 and X3 by design) maintain high relative frequencies even under weak overall SNR.
+  </div>
+</div>
+
+<div id="findings" class="section">
+  <div class="section-title">TC genesis findings</div>
+  <div class="section-sub">41 "core variables" appear in all 38 near-optimal models. All six of Gray's (1975) canonical TC genesis drivers were recovered — confirming alignment with decades of meteorological literature.</div>
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Gray's 6 canonical drivers — all confirmed</div>
+
+  <div id="drivers">
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #E1F5EE;"><i class="ti ti-wind" style="color: #0F6E56; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Vertical wind shear (200–850 hPa)</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Inverse of shear between lower and upper troposphere</div>
+        </div>
+        <span class="badge badge-teal" style="font-size: 11px;">p̂ = 1.00</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        Consistently negative coefficient across all 38 elite models — high wind shear <em>inhibits</em> TC formation by disrupting the vertical convective structure. The 200–850 hPa layer showed the strongest signal, with BIC increasing by 476 points when removed from the final model.
+      </div>
+    </div>
+
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #E6F1FB;"><i class="ti ti-rotate-clockwise" style="color: #185FA5; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Low-level relative vorticity</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Rotational motion of the atmosphere at lower levels</div>
+        </div>
+        <span class="badge badge-teal" style="font-size: 11px;">p̂ = 1.00</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        Relative vorticity at 200 hPa appears in all elite models with a consistently negative coefficient. This aligns with the physical mechanism: a pre-existing low-level rotational seed is necessary for TC organisation and spin-up.
+      </div>
+    </div>
+
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #FAEEDA;"><i class="ti ti-globe" style="color: #854F0B; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Coriolis parameter</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Earth's rotational effect — varies with latitude</div>
+        </div>
+        <span class="badge badge-teal" style="font-size: 11px;">p̂ = 1.00</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        The absolute Coriolis parameter appears in all elite models. TCs cannot form near the equator where the Coriolis force is too weak to sustain rotation — this is why they only develop beyond ~5° latitude.
+      </div>
+    </div>
+
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #FCEBEB;"><i class="ti ti-temperature" style="color: #A32D2D; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Sea surface temperature</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Ocean thermal energy source for TC development</div>
+        </div>
+        <span class="badge badge-teal" style="font-size: 11px;">p̂ = 1.00</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        SST has a consistently negative coefficient — counterintuitively, this reflects the model structure where <em>other</em> variables capture the direct positive effect, and SST's role is nuanced in the high-dimensional conditional context. The variable appears in all elite models, confirming its essential role.
+      </div>
+    </div>
+
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #EEEDFE;"><i class="ti ti-droplet" style="color: #534AB7; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Equivalent potential temperature diff</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Surface to 500 hPa — measure of atmospheric instability</div>
+        </div>
+        <span class="badge badge-blue" style="font-size: 11px;">p̂ = 0.86</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        This variable captures thermodynamic instability — the larger the difference between surface and mid-troposphere equivalent potential temperature, the more energetically favourable TC development becomes. Present in 86% of elite models.
+      </div>
+    </div>
+
+    <div class="driver-card" onclick="toggleDriver(this)">
+      <div class="driver-header">
+        <div class="driver-icon" style="background: #E1F5EE;"><i class="ti ti-cloud" style="color: #0F6E56; font-size: 14px;" aria-hidden="true"></i></div>
+        <div style="flex:1;">
+          <div style="font-size: 14px; font-weight: 500; color: var(--color-text-primary);">Mid-troposphere relative humidity</div>
+          <div style="font-size: 12px; color: var(--color-text-secondary);">Moisture availability at 500–700 hPa</div>
+        </div>
+        <span class="badge badge-gray" style="font-size: 11px;">p̂ = 0.46</span>
+        <i class="ti ti-chevron-down" style="font-size: 14px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+      </div>
+      <div class="driver-detail">
+        The weakest of Gray's six drivers in this analysis — relative humidity at 700 hPa appears in only 46% of sampled models. This lower frequency likely reflects collinearity with specific humidity and other moisture variables in the dataset, rather than physical unimportance.
+      </div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Top 12 core variables by relative frequency</div>
+  <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 1rem;">Variables appearing in all 38 elite models, sorted by how often they appeared across all sampled models</div>
+
+  <div id="core-vars">
+    <div class="row"><span class="var-name">Coriolis parameter (absolute)</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Specific humidity</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Sea surface temperature</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Geopotential at 925 hPa</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Vorticity rel. at 200 hPa</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Wind shear 200–850 hPa</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Wind shear 925–1000 hPa</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Wind U at 925 hPa</span><div class="bar-wrap"><div class="bar bar-teal" style="width:100%"></div></div><span class="var-freq">1.00</span></div>
+    <div class="row"><span class="var-name">Geopotential at 500 hPa</span><div class="bar-wrap"><div class="bar bar-blue" style="width:99%"></div></div><span class="var-freq">0.99</span></div>
+    <div class="row"><span class="var-name">Potential vorticity at 850 hPa</span><div class="bar-wrap"><div class="bar bar-blue" style="width:97%"></div></div><span class="var-freq">0.97</span></div>
+    <div class="row"><span class="var-name">Wind V at 200 hPa</span><div class="bar-wrap"><div class="bar bar-blue" style="width:96%"></div></div><span class="var-freq">0.96</span></div>
+    <div class="row"><span class="var-name">Equiv. pot. temp. diff.</span><div class="bar-wrap"><div class="bar bar-amber" style="width:87%"></div></div><span class="var-freq">0.86</span></div>
+  </div>
+</div>
+
+<div id="model" class="section">
+  <div class="section-title">The final model</div>
+  <div class="section-sub">Among 38 near-optimal (elite) models, the best was selected by 5-fold cross-validated log-loss and AUC-PR. It uses 54 variables and outperforms LASSO on parsimony while matching on prediction.</div>
+
+  <div class="grid2" style="margin-bottom:1rem;">
+    <div class="card-sm">
+      <div class="label">Final model variables</div>
+      <div class="val">54</div>
+      <div class="sub">vs LASSO's 81 at comparable predictive performance</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">CV AUC-PR</div>
+      <div class="val">0.659</div>
+      <div class="sub">Area under precision-recall curve (preferred over AUC-ROC given 8% class imbalance)</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">CV Log-loss</div>
+      <div class="val">0.153</div>
+      <div class="sub">Out-of-sample deviance — LASSO achieves 0.302 on CV deviance scale</div>
+    </div>
+    <div class="card-sm">
+      <div class="label">BIC minimum</div>
+      <div class="val">4,795.3</div>
+      <div class="sub">Across 41,000 × 4 chains × 12 λ values</div>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Top 20 coefficients by magnitude (standardised)</div>
+  <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 1rem;">Green bars = positive effect on TC genesis probability. Red bars = negative effect.</div>
+
+  <div id="coef-chart">
+    <div style="position: relative; width: 100%; height: 400px; margin-bottom: 0.5rem;">
+      <canvas id="coefChart" role="img" aria-label="Horizontal bar chart of top 20 standardised logistic regression coefficients for TC genesis prediction">Geopotential at 925 hPa has the largest positive coefficient (25.9). Geopotential at 600 hPa has the largest negative coefficient (-22.7).</canvas>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1rem; font-size: 12px; color: var(--color-text-secondary);">
+      <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #1D9E75; display: inline-block;"></span>Positive (promotes genesis)</span>
+      <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #E24B4A; display: inline-block;"></span>Negative (inhibits genesis)</span>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div style="font-size: 14px; font-weight: 500; margin-bottom: 0.75rem; color: var(--color-text-primary);">Model calibration</div>
+  <div style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 1rem;">Predicted probabilities vs observed TC genesis rates, across 10 equal-frequency bins. Well-calibrated models track the diagonal.</div>
+
+  <div style="position: relative; width: 100%; height: 260px; margin-bottom: 0.5rem;">
+    <canvas id="calibChart" role="img" aria-label="Scatter plot comparing predicted probabilities to observed TC genesis rates across 10 bins. Points closely follow the diagonal, indicating good calibration.">Calibration plot showing predicted vs observed rates. Points follow the 45-degree diagonal closely across all deciles.</canvas>
+  </div>
+
+  <hr class="divider">
+
+  <div class="insight-box">
+    <strong>Why does the model use 54 variables when Gray described only 6 drivers?</strong> The dataset measures the same physical phenomena at 9 pressure levels — creating many variables that are semantically the same driver at different altitudes. This is expected at a 12-hour lead time; Wijnands et al. found that at longer lead times the redundancy collapses to fewer dominant predictors.
+  </div>
+
+  <div style="margin-top: 1rem; display: flex; gap: 8px; flex-wrap: wrap;">
+    <button onclick="sendPrompt('What are the main limitations of this thesis and what future work is proposed?')" style="font-size: 13px; padding: 7px 14px; border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); color: var(--color-text-secondary); cursor: pointer;">Limitations & future work ↗</button>
+    <button onclick="sendPrompt('Can you explain more about why correlated variables like geopotential at 925 hPa and mean sea level pressure are both kept in the final model despite their 0.99 correlation?')" style="font-size: 13px; padding: 7px 14px; border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); color: var(--color-text-secondary); cursor: pointer;">Why keep correlated variables? ↗</button>
+    <button onclick="sendPrompt('How does the MCMC random search compare to LASSO in terms of variable selection for this TC genesis dataset?')" style="font-size: 13px; padding: 7px 14px; border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-secondary); background: var(--color-background-primary); color: var(--color-text-secondary); cursor: pointer;">RS vs LASSO comparison ↗</button>
+  </div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+function showSection(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  event.target.classList.add('active');
+}
+
+function toggleDriver(el) {
+  const detail = el.querySelector('.driver-detail');
+  detail.classList.toggle('open');
+}
+
+function filterSim(level, btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const rows = {
+    strong: document.getElementById('sim-strong-row'),
+    moderate: document.getElementById('sim-moderate-row'),
+    weak: document.getElementById('sim-weak-row')
+  };
+  if (level === 'all') {
+    Object.values(rows).forEach(r => r.style.display = '');
+  } else {
+    Object.entries(rows).forEach(([k, r]) => r.style.display = k === level ? '' : 'none');
+  }
+}
+
+const lambdaVals = [0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0];
+function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+
+new Chart(document.getElementById('lambdaChart'), {
+  type: 'line',
+  data: {
+    labels: lambdaVals.map(v => v.toFixed(2)),
+    datasets: [
+      {
+        label: 'ΔBIC = +1.5',
+        data: lambdaVals.map(l => parseFloat(sigmoid(l * 1.5).toFixed(3))),
+        borderColor: '#1D9E75', backgroundColor: 'transparent',
+        borderWidth: 2, pointRadius: 3, tension: 0.3,
+        borderDash: []
+      },
+      {
+        label: 'ΔBIC = +0.3',
+        data: lambdaVals.map(l => parseFloat(sigmoid(l * 0.3).toFixed(3))),
+        borderColor: '#378ADD', backgroundColor: 'transparent',
+        borderWidth: 2, pointRadius: 3, tension: 0.3,
+        borderDash: [5, 3]
+      },
+      {
+        label: 'ΔBIC = −0.3',
+        data: lambdaVals.map(l => parseFloat(sigmoid(l * -0.3).toFixed(3))),
+        borderColor: '#E24B4A', backgroundColor: 'transparent',
+        borderWidth: 2, pointRadius: 3, tension: 0.3,
+        borderDash: [2, 4]
+      }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { title: { display: true, text: 'λ value', font: { size: 11 } }, ticks: { font: { size: 11 } } },
+      y: {
+        min: 0, max: 1,
+        title: { display: true, text: 'Inclusion probability', font: { size: 11 } },
+        ticks: { font: { size: 11 }, callback: v => v.toFixed(2) },
+        grid: { color: 'rgba(128,128,128,0.15)' }
+      }
+    }
+  }
+});
+
+new Chart(document.getElementById('simChart'), {
+  type: 'bar',
+  data: {
+    labels: ['X1 (strong)', 'X2 (weaker)', 'X3 (strong)', 'X4 (weaker)'],
+    datasets: [
+      { label: 'Strong SNR', data: [1.0, 0.77, 1.0, 0.77], backgroundColor: '#1D9E75' },
+      { label: 'Moderate SNR', data: [1.0, 0.66, 1.0, 0.52], backgroundColor: '#EF9F27' },
+      { label: 'Weak SNR', data: [1.0, 0.17, 1.0, 0.27], backgroundColor: '#E24B4A' }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { font: { size: 11 } } },
+      y: {
+        min: 0, max: 1,
+        title: { display: true, text: 'Relative frequency', font: { size: 11 } },
+        ticks: { font: { size: 11 }, callback: v => v.toFixed(1) },
+        grid: { color: 'rgba(128,128,128,0.15)' }
+      }
+    }
+  }
+});
+
+const coefLabels = [
+  'Geopotential 925 hPa', 'Geopotential 600 hPa', 'Geopotential 850 hPa',
+  'Geopotential 700 hPa', 'Geopotential 500 hPa', 'Temperature',
+  'Abs. vorticity avg.', 'Mean sea level pressure', 'Coriolis parameter',
+  'Wind U', 'Temperature 500 hPa', 'Wind U 1000 hPa',
+  'Specific humidity', 'Geopotential 200 hPa', 'Wind U 925 hPa',
+  'Vert. velocity 850 hPa', 'Spec. humidity 600 hPa', 'Rel. humidity 600 hPa',
+  'Wind U 500 hPa', 'Wind shear 200-850 hPa'
+];
+const coefVals = [25.92, -22.73, -16.79, 12.85, 10.94, 9.02, 8.69, -7.99, -5.75, -5.38, -3.62, 3.58, 3.47, -3.34, -2.85, -2.63, -2.43, 2.32, 2.04, -1.95];
+
+new Chart(document.getElementById('coefChart'), {
+  type: 'bar',
+  data: {
+    labels: coefLabels,
+    datasets: [{
+      data: coefVals,
+      backgroundColor: coefVals.map(v => v > 0 ? '#1D9E75' : '#E24B4A'),
+      borderWidth: 0
+    }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        title: { display: true, text: 'Standardised coefficient', font: { size: 11 } },
+        ticks: { font: { size: 11 } },
+        grid: { color: 'rgba(128,128,128,0.15)' }
+      },
+      y: { ticks: { font: { size: 10 } } }
+    }
+  }
+});
+
+const obsRates = [0.000973, 0.000973, 0.001622, 0.003244, 0.004217, 0.013299, 0.023037, 0.050616, 0.148605, 0.584685];
+const predRates = [0.000059, 0.000459, 0.001442, 0.003314, 0.006830, 0.013249, 0.026421, 0.057228, 0.149069, 0.573200];
+
+new Chart(document.getElementById('calibChart'), {
+  type: 'scatter',
+  data: {
+    datasets: [
+      {
+        label: 'Predicted vs Observed',
+        data: predRates.map((p, i) => ({ x: parseFloat(p.toFixed(4)), y: parseFloat(obsRates[i].toFixed(4)) })),
+        backgroundColor: '#378ADD', pointRadius: 6, pointStyle: 'circle'
+      },
+      {
+        label: 'Perfect calibration',
+        data: [{ x: 0, y: 0 }, { x: 0.6, y: 0.6 }],
+        type: 'line',
+        borderColor: 'rgba(128,128,128,0.4)',
+        borderWidth: 1.5,
+        borderDash: [4, 3],
+        pointRadius: 0,
+        fill: false
+      }
+    ]
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: {
+        title: { display: true, text: 'Predicted probability', font: { size: 11 } },
+        ticks: { font: { size: 11 }, callback: v => v.toFixed(2) },
+        grid: { color: 'rgba(128,128,128,0.15)' }
+      },
+      y: {
+        title: { display: true, text: 'Observed TC genesis rate', font: { size: 11 } },
+        ticks: { font: { size: 11 }, callback: v => v.toFixed(2) },
+        grid: { color: 'rgba(128,128,128,0.15)' }
+      }
+    }
+  }
+});
+</script>
